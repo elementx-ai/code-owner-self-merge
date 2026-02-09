@@ -40421,8 +40421,7 @@ function getFilesNotOwnedByCodeOwner(owner, files, cwd) {
 
   for (const file of files) {
     const relative = file.startsWith("/") ? file.slice(1) : file
-    let owners = codeowners.getOwner(relative);
-    // If no owners are listed for this file, anyone can edit it
+    const owners = codeowners.getOwner(relative);
     if (owners.length > 0 && !owners.includes(owner)) {
       filesWhichArentOwned.push(file)
     }
@@ -40454,6 +40453,7 @@ function githubLoginIsInCodeowners(login, cwd) {
  */
 function hasValidLgtmSubstring(bodyLower) {
   const quoteChars = new Set(['"', "'", '`'])
+  const wordCharPattern = /[a-z0-9_]/
   let searchFrom = 0
 
   while (searchFrom < bodyLower.length) {
@@ -40468,6 +40468,7 @@ function hasValidLgtmSubstring(bodyLower) {
     const charBefore = idx > 0 ? bodyLower.charAt(idx - 1) : ''
     const charAfter = bodyLower.charAt(idx + 4)
     if (quoteChars.has(charBefore) || quoteChars.has(charAfter)) continue
+    if (wordCharPattern.test(charBefore) || wordCharPattern.test(charAfter)) continue
 
     return true
   }
