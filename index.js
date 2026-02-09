@@ -1,7 +1,7 @@
 // @ts-check
 
-import { context, getOctokit } from '@actions/github';
 import * as core from '@actions/core';
+import { context, getOctokit } from '@actions/github';
 import Codeowners from 'codeowners';
 import { readFileSync } from 'fs';
 
@@ -13,18 +13,18 @@ async function run() {
 
   // Tell folks they can merge
   if (context.eventName === "pull_request_target") {
-    commentOnMergablePRs()
+    await commentOnMergablePRs()
   }
 
   // Merge if they say they have access
   if (context.eventName === "issue_comment" || context.eventName === "pull_request_review") {
     const bodyLower = getPayloadBody().toLowerCase();
     if (hasValidLgtmSubstring(bodyLower)) {
-      new Actor().mergeIfHasAccess();
+      await new Actor().mergeIfHasAccess();
     } else if (bodyLower.includes("@github-actions close")) {
-      new Actor().closePROrIssueIfInCodeowners();
+      await new Actor().closePROrIssueIfInCodeowners();
     } else if (bodyLower.includes("@github-actions reopen")) {
-      new Actor().reopenPROrIssueIfInCodeowners();
+      await new Actor().reopenPROrIssueIfInCodeowners();
     } else {
       console.log("Doing nothing because the body does not include a command")
     }
@@ -77,12 +77,7 @@ async function commentOnMergablePRs() {
       await octokit.issues.addAssignees({ ...thisRepo, issue_number: pr.number, assignees: usernames})
     }
 
-    process.exit(0)
-  }
-
-  if (!codeowners.users.length) {
-    console.log("This PR does not have any code-owners")
-    process.exit(0)
+    return
   }
 
   const ourSignature = "<!-- Message About Merging -->"
@@ -90,7 +85,7 @@ async function commentOnMergablePRs() {
   const existingComment = comments.data.find(c => c.body.includes(ourSignature))
   if (existingComment) {
     console.log("There is an existing comment")
-    process.exit(0)
+    return
   }
 
   const ownerNoPings = JSON.parse(core.getInput('ownerNoPings'))
@@ -197,16 +192,22 @@ class Actor {
       return
     }
 
-    // Don't merge red PRs
+    // Don't merge red PRs or PRs with pending statuses
     const statusInfo = await octokit.repos.listCommitStatusesForRef({ ...thisRepo, ref: prInfo.data.head.sha })
-    const failedStatus = statusInfo.data
+    const latestStatuses = statusInfo.data
       // Check only the most recent for a set of duplicated statuses
       .filter(
         (thing, index, self) =>
           index === self.findIndex((t) => t.target_url === thing.target_url)
       )
-      .find(s => s.state !== "success")
 
+    const pendingStatus = latestStatuses.find(s => s.state === "pending")
+    if (pendingStatus) {
+      await octokit.issues.createComment({ ...thisRepo, issue_number: issue.number, body: `Sorry @${sender}, this PR has pending status checks that haven't completed yet. Blocked by [${pendingStatus.context}](${pendingStatus.target_url}): '${pendingStatus.description}'.` });
+      return
+    }
+
+    const failedStatus = latestStatuses.find(s => s.state !== "success")
     if (failedStatus) {
       await octokit.issues.createComment({ ...thisRepo, issue_number: issue.number, body: `Sorry @${sender}, this PR could not be merged because it wasn't green. Blocked by [${failedStatus.context}](${failedStatus.target_url}): '${failedStatus.description}'.` });
       return
@@ -285,8 +286,10 @@ export function getFilesNotOwnedByCodeOwner(owner, files, cwd) {
 export function githubLoginIsInCodeowners(login, cwd) {
   const codeowners = new Codeowners(cwd);
   const contents = readFileSync(codeowners.codeownersFilePath, "utf8").toLowerCase()
+  const loginLower = login.toLowerCase()
 
-  return contents.includes("@" + login.toLowerCase() + " ") || contents.includes("@" + login.toLowerCase() + "\n")
+  const pattern = new RegExp(`@${loginLower.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:\\s|$)`)
+  return pattern.test(contents)
 }
 
 /**
@@ -294,15 +297,21 @@ export function githubLoginIsInCodeowners(login, cwd) {
  * @param {string} bodyLower
  */
 export function hasValidLgtmSubstring(bodyLower) {
-  if (bodyLower.includes("lgtm")) {
-    if (bodyLower.includes("lgtm but")) return false
-    if (bodyLower.includes("lgtm, but")) return false
+  const quoteChars = new Set(['"', "'", '`'])
+  let searchFrom = 0
 
-    const charBefore = bodyLower.charAt(bodyLower.indexOf("lgtm") - 1)
-    const charAfter = bodyLower.charAt(bodyLower.indexOf("lgtm") + "lgtm".length)
-    if (charBefore === "\"" || charAfter === "\"") return false
-    if (charBefore === "'" || charAfter === "'") return false
-    if (charBefore === "`" || charAfter === "`") return false
+  while (searchFrom < bodyLower.length) {
+    const idx = bodyLower.indexOf("lgtm", searchFrom)
+    if (idx === -1) break
+
+    searchFrom = idx + 4
+
+    const afterLgtm = bodyLower.slice(idx + 4).trimStart()
+    if (afterLgtm.startsWith("but") || afterLgtm.startsWith(", but")) continue
+
+    const charBefore = idx > 0 ? bodyLower.charAt(idx - 1) : ''
+    const charAfter = bodyLower.charAt(idx + 4)
+    if (quoteChars.has(charBefore) || quoteChars.has(charAfter)) continue
 
     return true
   }
@@ -365,13 +374,18 @@ async function createOrAddLabel(octokit, repoDeets, labelConfig) {
 
   // Create the label if it doesn't exist yet
   if (!label) {
-    await octokit.issues.createLabel({
-      owner: repoDeets.owner,
-      repo: repoDeets.repo,
-      name: labelConfig.name,
-      color: labelConfig.color,
-      description: labelConfig.description,
-    })
+    try {
+      await octokit.issues.createLabel({
+        owner: repoDeets.owner,
+        repo: repoDeets.repo,
+        name: labelConfig.name,
+        color: labelConfig.color,
+        description: labelConfig.description,
+      })
+    } catch (error) {
+      if (error.status !== 422) throw error
+      core.info(`Label '${labelConfig.name}' already exists (created concurrently), continuing`)
+    }
   }
 
   await octokit.issues.addLabels({
@@ -382,12 +396,9 @@ async function createOrAddLabel(octokit, repoDeets, labelConfig) {
   })
 }
 
-try {
-  run()
-} catch (error) {
+run().catch(error => {
   core.setFailed(error.message)
-  throw error
-}
+})
 
 // Bail correctly
 process.on('uncaughtException', function (err) {
