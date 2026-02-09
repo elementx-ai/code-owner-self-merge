@@ -1,9 +1,9 @@
 // @ts-check
 
-const { context, getOctokit } = require('@actions/github')
-const core = require('@actions/core');
-const Codeowners = require('codeowners');
-const {readFileSync} = require("fs");
+import { context, getOctokit } from '@actions/github';
+import * as core from '@actions/core';
+import Codeowners from 'codeowners';
+import { readFileSync } from 'fs';
 
 const githubServerUrl = process.env['GITHUB_SERVER_URL'] || 'https://github.com'
 
@@ -258,14 +258,15 @@ class Actor {
  * @param {string[]} files
  * @param {string} cwd
  */
-function getFilesNotOwnedByCodeOwner(owner, files, cwd) {
+export function getFilesNotOwnedByCodeOwner(owner, files, cwd) {
   const filesWhichArentOwned = []
   const codeowners = new Codeowners(cwd);
 
   for (const file of files) {
     const relative = file.startsWith("/") ? file.slice(1) : file
     let owners = codeowners.getOwner(relative);
-    if (!owners.includes(owner)) {
+    // If no owners are listed for this file, anyone can edit it
+    if (owners.length > 0 && !owners.includes(owner)) {
       filesWhichArentOwned.push(file)
     }
   }
@@ -281,7 +282,7 @@ function getFilesNotOwnedByCodeOwner(owner, files, cwd) {
  * @param {string} login
  * @param {string} cwd
  */
- function githubLoginIsInCodeowners(login, cwd) {
+export function githubLoginIsInCodeowners(login, cwd) {
   const codeowners = new Codeowners(cwd);
   const contents = readFileSync(codeowners.codeownersFilePath, "utf8").toLowerCase()
 
@@ -292,7 +293,7 @@ function getFilesNotOwnedByCodeOwner(owner, files, cwd) {
  *
  * @param {string} bodyLower
  */
-function hasValidLgtmSubstring(bodyLower) {
+export function hasValidLgtmSubstring(bodyLower) {
   if (bodyLower.includes("lgtm")) {
     if (bodyLower.includes("lgtm but")) return false
     if (bodyLower.includes("lgtm, but")) return false
@@ -327,7 +328,7 @@ function listFilesWithOwners(files, cwd) {
   console.log(readFileSync(codeowners.codeownersFilePath, "utf8"))
 }
 
-function findCodeOwnersForChangedFiles(changedFiles, cwd)  {
+export function findCodeOwnersForChangedFiles(changedFiles, cwd)  {
   const owners = new Set()
   const labels = new Set()
   const codeowners = new Codeowners(cwd);
@@ -381,22 +382,11 @@ async function createOrAddLabel(octokit, repoDeets, labelConfig) {
   })
 }
 
-// For tests
-module.exports = {
-  getFilesNotOwnedByCodeOwner,
-  findCodeOwnersForChangedFiles,
-  githubLoginIsInCodeowners,
-  hasValidLgtmSubstring
-}
-
-// @ts-ignore
-if (!module.parent) {
-  try {
-    run()
-  } catch (error) {
-    core.setFailed(error.message)
-    throw error
-  }
+try {
+  run()
+} catch (error) {
+  core.setFailed(error.message)
+  throw error
 }
 
 // Bail correctly

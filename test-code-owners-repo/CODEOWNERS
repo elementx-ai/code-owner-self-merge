@@ -1,0 +1,3 @@
+root-codeowners/**/*.js @two
+random-path/ @one
+/package.json

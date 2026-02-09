@@ -1,4 +1,4 @@
-const { getFilesNotOwnedByCodeOwner, findCodeOwnersForChangedFiles, githubLoginIsInCodeowners, hasValidLgtmSubstring } = require(".");
+import { getFilesNotOwnedByCodeOwner, findCodeOwnersForChangedFiles, githubLoginIsInCodeowners, hasValidLgtmSubstring } from "./index.js";
 
 test("determine who owns a set of files", () => {
   const noFiles = findCodeOwnersForChangedFiles(["root-codeowners/one.two.js"], "./test-code-owners-repo");
@@ -21,7 +21,6 @@ test("real world 2", () => {
 });
 
 test("real world with labels", () => {
-  // spanish has [] labels in the CODEOWNERS
   const changed = ["/packages/typescriptlang-org/src/copy/es/index.ts", "/packages/typescriptlang-org/src/copy/es/nav.ts"];
   const filesNotInCodeowners = findCodeOwnersForChangedFiles(changed, ".");
   expect(filesNotInCodeowners.labels).toEqual(["translate", "es"]);
@@ -33,6 +32,17 @@ test("deciding if someone has access to merge", () => {
 
   const filesNotInCodeowners = getFilesNotOwnedByCodeOwner("@two", ["random-path/file.ts"], "./test-code-owners-repo");
   expect(filesNotInCodeowners).toEqual(["random-path/file.ts"]);
+});
+
+test("files with no designated owners are accessible to anyone", () => {
+  const files = getFilesNotOwnedByCodeOwner("@one", ["package.json"], "./test-code-owners-repo");
+  expect(files).toEqual([]);
+
+  const files2 = getFilesNotOwnedByCodeOwner("@two", ["package.json"], "./test-code-owners-repo");
+  expect(files2).toEqual([]);
+
+  const mixed = getFilesNotOwnedByCodeOwner("@one", ["package.json", "README.md"], "./test-code-owners-repo");
+  expect(mixed).toEqual([]);
 });
 
 describe(githubLoginIsInCodeowners, () => {
@@ -52,7 +62,7 @@ describe(githubLoginIsInCodeowners, () => {
     const noOrt = githubLoginIsInCodeowners("ort", ".");
     expect(noOrt).toEqual(false);
   });
-})  
+})
 
 describe(hasValidLgtmSubstring, () => {
   test("allows lgtm", () => {
