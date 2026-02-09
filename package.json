@@ -2,15 +2,20 @@
   "name": "code-owner-self-merge",
   "version": "1.0.0",
   "main": "index.js",
+  "type": "module",
   "license": "MIT",
   "scripts": {
-    "test": "npx jest"
+    "build": "ncc build index.js -o dist",
+    "test": "NODE_OPTIONS='--experimental-vm-modules' npx jest"
   },
   "dependencies": {
-    "@actions/core": "^1.2.4",
-    "@actions/github": "^4.0.0",
-    "@octokit/webhooks": "^7.9.3",
-    "@types/jest": "^26.0.9",
-    "codeowners": "^4.2.0"
+    "@actions/core": "^3.0.0",
+    "@actions/github": "^9.0.0",
+    "@octokit/webhooks": "^14.2.0",
+    "@types/jest": "^30.0.0",
+    "codeowners": "^5.1.1"
+  },
+  "devDependencies": {
+    "@vercel/ncc": "^0.38.4"
   }
 }

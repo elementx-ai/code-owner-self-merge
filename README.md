@@ -6,7 +6,7 @@ This action uses the standardized structure of [a CODEOWNERS file](https://githu
 
 ## A simple example
 
-So, with this file at: `.github/CODEOWNERS`:
+So, with this file at: `CODEOWNERS` or `.github/CODEOWNERS`:
 
 ```sh
 README.md @orta
@@ -18,7 +18,7 @@ Then, when/if this happens the GitHub Action will merge for you.
 
 ## A real-world example
 
-`.github/CODEOWNERS`:
+`CODEOWNERS` or `.github/CODEOWNERS`:
 
 ```sh
 # Collaborators for Japanese Translation of the Website
@@ -48,7 +48,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Run Codeowners merge check
-        uses: OSS-Docs-Tools/code-owner-self-merge@1.6.8
+        uses: elementx-ai/code-owner-self-merge@main
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 ```
