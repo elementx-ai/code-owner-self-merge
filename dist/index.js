@@ -40443,7 +40443,7 @@ function githubLoginIsInCodeowners(login, cwd) {
   const contents = (0,external_fs_.readFileSync)(codeowners.codeownersFilePath, "utf8").toLowerCase()
   const loginLower = login.toLowerCase()
 
-  const pattern = new RegExp(`@${loginLower.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:\\s|$)`)
+  const pattern = new RegExp(`(^|\\s)@${loginLower.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:\\s|$)`, 'm')
   return pattern.test(contents)
 }
 
