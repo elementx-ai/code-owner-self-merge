@@ -1,4 +1,11 @@
-import { findCodeOwnersForChangedFiles, getFilesNotOwnedByCodeOwner, githubLoginIsInCodeowners, hasValidLgtmSubstring } from "./index.js";
+import { describe, expect, test } from "@jest/globals";
+
+import {
+  findCodeOwnersForChangedFiles,
+  getFilesNotOwnedByCodeOwner,
+  githubLoginIsInCodeowners,
+  hasValidLgtmSubstring,
+} from "./index.js";
 
 test("determine who owns a set of files", () => {
   const noFiles = findCodeOwnersForChangedFiles(["src/one.two.js"], "./test");
@@ -80,7 +87,7 @@ describe("githubLoginIsInCodeowners", () => {
     const noUser = githubLoginIsInCodeowners("user", "./test");
     expect(noUser).toEqual(false);
   });
-})
+});
 
 describe("hasValidLgtmSubstring", () => {
   test("allows lgtm", () => {
@@ -124,4 +131,4 @@ describe("hasValidLgtmSubstring", () => {
     const isValidSubstring = hasValidLgtmSubstring("lgtm`");
     expect(isValidSubstring).toEqual(false);
   });
-})
+});
