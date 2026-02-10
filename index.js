@@ -336,7 +336,12 @@ export const findCodeOwnersForChangedFiles = (changedFiles, cwd) => {
 
 const getPRChangedFiles = async (octokit, repoDeets, prNumber) => {
   // https://developer.github.com/v3/pulls/#list-pull-requests-files
-  const options = octokit.pulls.listFiles.endpoint.merge({ ...repoDeets, pull_number: prNumber });
+  const listFiles = octokit.rest?.pulls?.listFiles ?? octokit.pulls?.listFiles;
+  if (!listFiles) {
+    throw new Error("Octokit pulls.listFiles is unavailable; check @actions/github version");
+  }
+
+  const options = listFiles.endpoint.merge({ ...repoDeets, pull_number: prNumber });
 
   /** @type { import("@octokit/types").PullsListFilesResponseData} */
   const files = await octokit.paginate(options);
