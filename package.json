@@ -5,6 +5,7 @@
   "type": "module",
   "license": "MIT",
   "scripts": {
+    "lint": "eslint index.js index.test.js",
     "build": "ncc build index.js -o dist",
     "test": "NODE_OPTIONS='--experimental-vm-modules' npx jest"
   },
@@ -16,6 +17,8 @@
     "codeowners": "^5.1.1"
   },
   "devDependencies": {
-    "@vercel/ncc": "^0.38.4"
+    "@elementx-ai/eslint-config": "^8.1.1",
+    "@vercel/ncc": "^0.38.4",
+    "eslint": "^9.39.2"
   }
 }
