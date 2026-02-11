@@ -5,7 +5,7 @@ import {
   getFilesNotOwnedByCodeOwner,
   githubLoginIsInCodeowners,
   hasValidLgtmSubstring,
-} from "./index.js";
+} from "./index.mjs";
 
 test("determine who owns a set of files", () => {
   const noFiles = findCodeOwnersForChangedFiles(["src/one.two.js"], "./test");

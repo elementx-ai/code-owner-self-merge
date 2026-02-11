@@ -1,5 +1,3 @@
-// @ts-check
-
 import * as core from "@actions/core";
 import { context, getOctokit } from "@actions/github";
 import Codeowners from "codeowners";
@@ -382,7 +380,7 @@ const createOrAddLabel = async (octokit, repoDeets, labelConfig) => {
 
 // Effectively the main function
 const run = async () => {
-  core.info("Running version 1.6.7");
+  core.info("Running version 0.1.0");
 
   // Tell folks they can merge
   if (context.eventName === "pull_request_target") {

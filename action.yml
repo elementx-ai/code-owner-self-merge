@@ -18,10 +18,10 @@ inputs:
     required: false
 
   if_no_maintainers_add_label:
-    description: "If a PR does not have any community maintainers, apply this label"
+    description: 'If a PR does not have any community maintainers, apply this label'
     default: ''
     required: false
-    
+
   if_no_maintainers_assign:
     description: 'If a PR does not have any community maintainers, assign these people (e.g. "@orta @sandersn")'
     default: ''
@@ -39,4 +39,4 @@ inputs:
 
 runs:
   using: 'node20'
-  main: 'dist/index.js'
+  main: 'dist/index.mjs'

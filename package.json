@@ -1,12 +1,12 @@
 {
   "name": "code-owner-self-merge",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "main": "index.js",
   "type": "module",
   "license": "MIT",
   "scripts": {
     "lint": "eslint index.js index.test.js",
-    "build": "ncc build index.js -o dist",
+    "build": "ncc build index.mjs -o dist",
     "test": "NODE_OPTIONS='--experimental-vm-modules' npx jest"
   },
   "dependencies": {
