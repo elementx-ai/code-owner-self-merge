@@ -5,7 +5,7 @@ import {
   getFilesNotOwnedByCodeOwner,
   githubLoginIsInCodeowners,
   hasValidLgtmSubstring,
-} from "./index.mjs";
+} from "./index.js";
 
 test("determine who owns a set of files", () => {
   const noFiles = findCodeOwnersForChangedFiles(["src/one.two.js"], "./test");
@@ -22,13 +22,19 @@ test("real world", () => {
 });
 
 test("real world 2", () => {
-  const changed = ["/packages/typescriptlang-org/src/copy/pt/index.ts", "/packages/typescriptlang-org/src/copy/pt/nav.ts"];
+  const changed = [
+    "/packages/typescriptlang-org/src/copy/pt/index.ts",
+    "/packages/typescriptlang-org/src/copy/pt/nav.ts",
+  ];
   const filesNotInCodeowners = findCodeOwnersForChangedFiles(changed, "./test");
   expect(filesNotInCodeowners.users).toEqual(["@khaosdoctor", "@danilofuchs", "@orta"]);
 });
 
 test("real world with labels", () => {
-  const changed = ["/packages/typescriptlang-org/src/copy/es/index.ts", "/packages/typescriptlang-org/src/copy/es/nav.ts"];
+  const changed = [
+    "/packages/typescriptlang-org/src/copy/es/index.ts",
+    "/packages/typescriptlang-org/src/copy/es/nav.ts",
+  ];
   const filesNotInCodeowners = findCodeOwnersForChangedFiles(changed, "./test");
   expect(filesNotInCodeowners.labels).toEqual(["translate", "es"]);
 });

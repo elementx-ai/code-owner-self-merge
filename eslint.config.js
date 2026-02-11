@@ -1,5 +1,12 @@
-import js from "@elementx-ai/eslint-config/configs/js.js";
+import ts from "@elementx-ai/eslint-config/configs/ts.js";
 
 export default [
-  ...js,
+  ...ts,
+  {
+    ignores: [
+      "dist/**",
+      "jest.config.cjs",
+      "rollup.config.mjs",
+    ],
+  },
 ];
