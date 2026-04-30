@@ -41,7 +41,7 @@ inputs:
 
   token:
     description: "GitHub token to use for API calls"
-    default: ${{ github.token }}
+    default: ""
     required: false
 
 runs:
