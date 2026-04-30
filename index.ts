@@ -39,7 +39,7 @@ const CODEOWNERS_PATHS = [
 ];
 
 const tryNewCodeowners = (
-  cwd: string
+  cwd: string,
 ): InstanceType<typeof Codeowners> | null => {
   if (!CODEOWNERS_PATHS.some((p) => existsSync(join(cwd, p)))) {
     return null;
@@ -52,7 +52,7 @@ const tryNewCodeowners = (
 const commentOnMergablePRs = async (): Promise<void> => {
   if (context.eventName !== "pull_request_target") {
     throw new Error(
-      "This function can only run when the workflow specifies `pull_request_target` in the `on:`."
+      "This function can only run when the workflow specifies `pull_request_target` in the `on:`.",
     );
   }
 
@@ -63,7 +63,7 @@ const commentOnMergablePRs = async (): Promise<void> => {
   const thisRepo = { owner: context.repo.owner, repo: context.repo.repo };
 
   core.info(
-    `\nLooking at PR: '${pr?.title ?? ""}' to see if the changed files all fit inside one set of code-owners to make a comment`
+    `\nLooking at PR: '${pr?.title ?? ""}' to see if the changed files all fit inside one set of code-owners to make a comment`,
   );
 
   const co = tryNewCodeowners(cwd);
@@ -90,7 +90,7 @@ const commentOnMergablePRs = async (): Promise<void> => {
     const filesWhichArentOwned = getFilesNotOwnedByCodeOwner(
       owner,
       changedFiles,
-      cwd
+      cwd,
     );
     if (filesWhichArentOwned.length === 0) {
       ownersWhoHaveAccessToAllFilesInPR.push(owner);
@@ -99,7 +99,7 @@ const commentOnMergablePRs = async (): Promise<void> => {
 
   if (!ownersWhoHaveAccessToAllFilesInPR.length) {
     console.log(
-      "This PR does not have any code-owners who own all of the files in the PR"
+      "This PR does not have any code-owners who own all of the files in the PR",
     );
     listFilesWithOwners(changedFiles, cwd);
 
@@ -112,7 +112,7 @@ const commentOnMergablePRs = async (): Promise<void> => {
       await createOrAddLabel(
         octokit,
         { ...thisRepo, id: pr.number },
-        labelConfig
+        labelConfig,
       );
     }
 
@@ -140,7 +140,7 @@ const commentOnMergablePRs = async (): Promise<void> => {
     issue_number: pr.number,
   });
   const existingComment = comments.data.find((comment) =>
-    comment.body?.includes(ourSignature)
+    comment.body?.includes(ourSignature),
   );
   if (existingComment) {
     console.log("There is an existing comment");
@@ -150,7 +150,7 @@ const commentOnMergablePRs = async (): Promise<void> => {
   const ownerNoPings = JSON.parse(core.getInput("ownerNoPings")) as string[];
   const formattedOwnersWhoHaveAccessToAllFilesInPR =
     ownersWhoHaveAccessToAllFilesInPR.map((owner) =>
-      ownerNoPings.includes(owner) ? `\`${owner}\`` : owner
+      ownerNoPings.includes(owner) ? `\`${owner}\`` : owner,
     );
   const owners = formatList(formattedOwnersWhoHaveAccessToAllFilesInPR);
   const message = `Thanks for the PR!
@@ -176,7 +176,7 @@ ${ourSignature}`;
     await createOrAddLabel(
       octokit,
       { ...thisRepo, id: pr.number },
-      labelConfig
+      labelConfig,
     );
   }
 };
@@ -185,7 +185,7 @@ const pathListToMarkdown = (files: string[]): string =>
   files
     .map(
       (item) =>
-        `* [\`${item}\`](${githubServerUrl}/${context.repo.owner}/${context.repo.repo}/tree/HEAD${encodeURIComponent(item)})`
+        `* [\`${item}\`](${githubServerUrl}/${context.repo.owner}/${context.repo.repo}/tree/HEAD${encodeURIComponent(item)})`,
     )
     .join("\n");
 
@@ -227,24 +227,24 @@ class Actor {
   async getTargetPRIfHasAccess(): Promise<PullsGetResponse | undefined> {
     const { octokit, thisRepo, sender, issue, cwd } = this;
     core.info(
-      `\n\nLooking at the ${context.eventName} from ${sender} in '${issue.title ?? ""}' to see if we can proceed`
+      `\n\nLooking at the ${context.eventName} from ${sender} in '${issue.title ?? ""}' to see if we can proceed`,
     );
 
     const changedFiles = await getPRChangedFiles(
       octokit,
       thisRepo,
-      issue.number
+      issue.number,
     );
     core.info(`Changed files: \n - ${changedFiles.join("\n - ")}`);
 
     const filesWhichArentOwned = getFilesNotOwnedByCodeOwner(
       `@${sender}`,
       changedFiles,
-      cwd
+      cwd,
     );
     if (filesWhichArentOwned.length !== 0) {
       console.log(
-        `@${sender} does not have access to \n - ${filesWhichArentOwned.join("\n - ")}\n`
+        `@${sender} does not have access to \n - ${filesWhichArentOwned.join("\n - ")}\n`,
       );
       listFilesWithOwners(changedFiles, cwd);
       await octokit.rest.issues.createComment({
@@ -306,11 +306,11 @@ class Actor {
     const latestStatuses = statusInfo.data.filter(
       (thing, index, self) =>
         index ===
-        self.findIndex((item) => item.target_url === thing.target_url)
+        self.findIndex((item) => item.target_url === thing.target_url),
     );
 
     const pendingStatus = latestStatuses.find(
-      (status) => status.state === "pending"
+      (status) => status.state === "pending",
     );
     if (pendingStatus) {
       await octokit.rest.issues.createComment({
@@ -322,7 +322,7 @@ class Actor {
     }
 
     const failedStatus = latestStatuses.find(
-      (status) => status.state !== "success"
+      (status) => status.state !== "success",
     );
     if (failedStatus) {
       await octokit.rest.issues.createComment({
@@ -413,7 +413,7 @@ class Actor {
 export const getFilesNotOwnedByCodeOwner = (
   owner: string,
   files: string[],
-  cwd: string
+  cwd: string,
 ): string[] => {
   const filesWhichArentOwned: string[] = [];
   const codeowners = tryNewCodeowners(cwd);
@@ -436,7 +436,7 @@ export const getFilesNotOwnedByCodeOwner = (
 // but SHOULD NOT be used for authentication for something which mutates the repo.
 export const githubLoginIsInCodeowners = (
   login: string,
-  cwd: string
+  cwd: string,
 ): boolean => {
   const codeowners = tryNewCodeowners(cwd);
   if (!codeowners) {
@@ -444,19 +444,19 @@ export const githubLoginIsInCodeowners = (
   }
   const contents = readFileSync(
     codeowners.codeownersFilePath,
-    "utf8"
+    "utf8",
   ).toLowerCase();
   const loginLower = login.toLowerCase();
 
   const pattern = new RegExp(
     `(^|\\s)@${loginLower.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:\\s|$)`,
-    "m"
+    "m",
   );
   return pattern.test(contents);
 };
 
 export const hasValidLgtmSubstring = (bodyLower: string): boolean => {
-  const quoteChars = new Set(["\"", "'", "`"]);
+  const quoteChars = new Set(['"', "'", "`"]);
   const wordCharPattern = /[a-z0-9_]/;
   let searchFrom = 0;
 
@@ -505,7 +505,7 @@ const listFilesWithOwners = (files: string[], cwd: string): void => {
 
 export const findCodeOwnersForChangedFiles = (
   changedFiles: string[],
-  cwd: string
+  cwd: string,
 ): { users: string[]; labels: string[] } => {
   const owners = new Set<string>();
   const labels = new Set<string>();
@@ -536,7 +536,7 @@ export const findCodeOwnersForChangedFiles = (
 const getPRChangedFiles = async (
   octokit: Octokit,
   repoDeets: RepoDetails,
-  prNumber: number
+  prNumber: number,
 ): Promise<string[]> => {
   const options = octokit.rest.pulls.listFiles.endpoint.merge({
     ...repoDeets,
@@ -544,24 +544,24 @@ const getPRChangedFiles = async (
   });
   const files = await octokit.paginate(options);
   return (files as PullsListFilesResponseItem[]).map(
-    (file) => `/${file.filename}`
+    (file) => `/${file.filename}`,
   );
 };
 
 const createOrAddLabel = async (
   octokit: Octokit,
   repoDeets: RepoDetails,
-  labelConfig: LabelConfig
+  labelConfig: LabelConfig,
 ): Promise<void> => {
   const existingLabels = await octokit.paginate(
     "GET /repos/:owner/:repo/labels",
     {
       owner: repoDeets.owner,
       repo: repoDeets.repo,
-    }
+    },
   );
   const label = (existingLabels as RepoLabel[]).find(
-    (item) => item.name === labelConfig.name
+    (item) => item.name === labelConfig.name,
   );
 
   // Create the label if it doesn't exist yet
@@ -580,7 +580,7 @@ const createOrAddLabel = async (
         throw error;
       }
       core.info(
-        `Label '${labelConfig.name}' already exists (created concurrently), continuing`
+        `Label '${labelConfig.name}' already exists (created concurrently), continuing`,
       );
     }
   }
