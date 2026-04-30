@@ -11,14 +11,21 @@ test("determine who owns a set of files", () => {
   const noFiles = findCodeOwnersForChangedFiles(["src/one.two.js"], "./test");
   expect(noFiles.users).toEqual(["@two"]);
 
-  const filesNotInCodeowners = findCodeOwnersForChangedFiles(["src/one.two.ts"], "./test");
+  const filesNotInCodeowners = findCodeOwnersForChangedFiles(
+    ["src/one.two.ts"],
+    "./test",
+  );
   expect(filesNotInCodeowners.users).toEqual([]);
 });
 
 test("real world", () => {
   const changed = ["/packages/tsconfig-reference/copy/pt/options/files.md"];
   const filesNotInCodeowners = findCodeOwnersForChangedFiles(changed, "./test");
-  expect(filesNotInCodeowners.users).toEqual(["@khaosdoctor", "@danilofuchs", "@orta"]);
+  expect(filesNotInCodeowners.users).toEqual([
+    "@khaosdoctor",
+    "@danilofuchs",
+    "@orta",
+  ]);
 });
 
 test("real world 2", () => {
@@ -27,7 +34,11 @@ test("real world 2", () => {
     "/packages/typescriptlang-org/src/copy/pt/nav.ts",
   ];
   const filesNotInCodeowners = findCodeOwnersForChangedFiles(changed, "./test");
-  expect(filesNotInCodeowners.users).toEqual(["@khaosdoctor", "@danilofuchs", "@orta"]);
+  expect(filesNotInCodeowners.users).toEqual([
+    "@khaosdoctor",
+    "@danilofuchs",
+    "@orta",
+  ]);
 });
 
 test("real world with labels", () => {
@@ -40,10 +51,18 @@ test("real world with labels", () => {
 });
 
 test("deciding if someone has access to merge", () => {
-  const noFiles = getFilesNotOwnedByCodeOwner("@two", ["src/one.two.js"], "./test");
+  const noFiles = getFilesNotOwnedByCodeOwner(
+    "@two",
+    ["src/one.two.js"],
+    "./test",
+  );
   expect(noFiles).toEqual([]);
 
-  const filesNotInCodeowners = getFilesNotOwnedByCodeOwner("@two", ["random-path/file.ts"], "./test");
+  const filesNotInCodeowners = getFilesNotOwnedByCodeOwner(
+    "@two",
+    ["random-path/file.ts"],
+    "./test",
+  );
   expect(filesNotInCodeowners).toEqual(["random-path/file.ts"]);
 });
 
@@ -51,10 +70,18 @@ test("files with no designated owners are accessible to anyone", () => {
   const files = getFilesNotOwnedByCodeOwner("@one", ["package.json"], "./test");
   expect(files).toEqual([]);
 
-  const files2 = getFilesNotOwnedByCodeOwner("@two", ["package.json"], "./test");
+  const files2 = getFilesNotOwnedByCodeOwner(
+    "@two",
+    ["package.json"],
+    "./test",
+  );
   expect(files2).toEqual([]);
 
-  const mixed = getFilesNotOwnedByCodeOwner("@one", ["package.json", "unowned/file.md"], "./test");
+  const mixed = getFilesNotOwnedByCodeOwner(
+    "@one",
+    ["package.json", "unowned/file.md"],
+    "./test",
+  );
   expect(mixed).toEqual([]);
 });
 
@@ -95,21 +122,59 @@ describe("githubLoginIsInCodeowners", () => {
   });
 });
 
+describe("no CODEOWNERS present", () => {
+  const noCOPath = "./test/no-codeowners-fixture"; // directory with no CODEOWNERS file
+
+  test("findCodeOwnersForChangedFiles returns empty users and labels", () => {
+    const result = findCodeOwnersForChangedFiles(
+      ["src/foo.ts", "README.md"],
+      noCOPath,
+    );
+    expect(result.users).toEqual([]);
+    expect(result.labels).toEqual([]);
+  });
+
+  test("getFilesNotOwnedByCodeOwner returns all files (no access granted)", () => {
+    const files = ["src/foo.ts", "README.md"];
+    const result = getFilesNotOwnedByCodeOwner("@someuser", files, noCOPath);
+    expect(result).toEqual(files);
+  });
+
+  test("getFilesNotOwnedByCodeOwner does not grant access for any user", () => {
+    const files = ["src/secret.ts"];
+    expect(getFilesNotOwnedByCodeOwner("@admin", files, noCOPath)).toEqual(
+      files,
+    );
+    expect(getFilesNotOwnedByCodeOwner("@owner", files, noCOPath)).toEqual(
+      files,
+    );
+  });
+
+  test("githubLoginIsInCodeowners returns false", () => {
+    expect(githubLoginIsInCodeowners("orta", noCOPath)).toEqual(false);
+    expect(githubLoginIsInCodeowners("anyuser", noCOPath)).toEqual(false);
+  });
+});
+
 describe("hasValidLgtmSubstring", () => {
   test("allows lgtm", () => {
     const isValidSubstring = hasValidLgtmSubstring("this lgtm!");
     expect(isValidSubstring).toEqual(true);
   });
   test("allows later unquoted lgtm after a quoted one", () => {
-    const isValidSubstring = hasValidLgtmSubstring("\"lgtm\" and then lgtm");
+    const isValidSubstring = hasValidLgtmSubstring('"lgtm" and then lgtm');
     expect(isValidSubstring).toEqual(true);
   });
   test("skips lgtm but and accepts later lgtm", () => {
-    const isValidSubstring = hasValidLgtmSubstring("lgtm but not now; lgtm later");
+    const isValidSubstring = hasValidLgtmSubstring(
+      "lgtm but not now; lgtm later",
+    );
     expect(isValidSubstring).toEqual(true);
   });
   test("skips lgtm, but and accepts later lgtm", () => {
-    const isValidSubstring = hasValidLgtmSubstring("lgtm, but not now; ok lgtm");
+    const isValidSubstring = hasValidLgtmSubstring(
+      "lgtm, but not now; ok lgtm",
+    );
     expect(isValidSubstring).toEqual(true);
   });
   test("denies lgtm embedded in words", () => {
@@ -126,7 +191,7 @@ describe("hasValidLgtmSubstring", () => {
     expect(isValidSubstring).toEqual(false);
   });
   test("denies lgtm in double quotes", () => {
-    const isValidSubstring = hasValidLgtmSubstring("\"lgtm\"");
+    const isValidSubstring = hasValidLgtmSubstring('"lgtm"');
     expect(isValidSubstring).toEqual(false);
   });
   test("denies lgtm in single quotes", () => {

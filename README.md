@@ -28,7 +28,7 @@ packages/typescriptlang-org/src/copy/ja/**/*.md @sasurau4 @Quramy @Naturalclar @
 packages/documentation/copy/ja/**/*.ts @sasurau4 @Quramy @Naturalclar @Takepepe @orta
 ```
 
-This allows any of `@sasurau4`, `@Quramy`,  `@Naturalclar`, `@Takepepe` or `@orta` to merge PRs which affect their areas of the translation process in the TypeScript Website repo. Code owners can use a [review](https://github.com/orta/code-owner-self-merge/pull/3), or a [comment](https://github.com/orta/code-owner-self-merge/pull/1) to merge.
+This allows any of `@sasurau4`, `@Quramy`, `@Naturalclar`, `@Takepepe` or `@orta` to merge PRs which affect their areas of the translation process in the TypeScript Website repo. Code owners can use a [review](https://github.com/orta/code-owner-self-merge/pull/3), or a [comment](https://github.com/orta/code-owner-self-merge/pull/1) to merge.
 
 ## Setting It Up
 
@@ -101,8 +101,8 @@ There are six options available at the moment:
   env:
     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   with:
-    cwd: './docs'
-    merge_method: 'squash'
+    cwd: "./docs"
+    merge_method: "squash"
 ```
 
 Then 2 for handling fallbacks on PRs which aren't able to be maintained by anyone in the CODEOWNERs:
@@ -116,9 +116,9 @@ Then 2 for handling fallbacks on PRs which aren't able to be maintained by anyon
   env:
     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   with:
-    merge_method: 'squash'
-    if_no_maintainers_add_label: 'maintainers'
-    if_no_maintainers_assign: '@orta @sandersn'
+    merge_method: "squash"
+    if_no_maintainers_add_label: "maintainers"
+    if_no_maintainers_assign: "@orta @sandersn"
 ```
 
 ### Dev
