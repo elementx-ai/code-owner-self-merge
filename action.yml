@@ -23,7 +23,8 @@ inputs:
     required: false
 
   if_no_maintainers_assign:
-    description: 'If a PR does not have any community maintainers, assign these people (e.g. "@orta @sandersn")'
+    description: 'If a PR does not have any community maintainers, assign these
+      people (e.g. "@orta @sandersn")'
     default: ''
     required: false
 
@@ -37,6 +38,11 @@ inputs:
     default: '[]'
     required: false
 
+  token:
+    description: 'GitHub token to use for API calls'
+    default: ${{ github.token }}
+    required: false
+
 runs:
-  using: 'node20'
+  using: 'node24'
   main: 'dist/index.mjs'

@@ -24,6 +24,19 @@ type LabelConfig = {
 
 const githubServerUrl = process.env["GITHUB_SERVER_URL"] || "https://github.com";
 
+const getGithubToken = (): string => core.getInput("token") || process.env.GITHUB_TOKEN || "";
+
+const tryNewCodeowners = (cwd: string): InstanceType<typeof Codeowners> | null => {
+  try {
+    return new Codeowners(cwd);
+  } catch (error) {
+    if (error instanceof Error && error.message.toLowerCase().includes("no codeowners")) {
+      return null;
+    }
+    throw error;
+  }
+};
+
 // eslint-disable-next-line complexity
 const commentOnMergablePRs = async (): Promise<void> => {
   if (context.eventName !== "pull_request_target") {
@@ -32,13 +45,17 @@ const commentOnMergablePRs = async (): Promise<void> => {
 
   // Setup
   const cwd = core.getInput("cwd") || process.cwd();
-  const octokit = getOctokit(process.env.GITHUB_TOKEN ?? "");
+  const octokit = getOctokit(getGithubToken());
   const pr = context.payload.pull_request;
   const thisRepo = { owner: context.repo.owner, repo: context.repo.repo };
 
   core.info(`\nLooking at PR: '${pr?.title ?? ""}' to see if the changed files all fit inside one set of code-owners to make a comment`);
 
-  const co = new Codeowners(cwd);
+  const co = tryNewCodeowners(cwd);
+  if (!co) {
+    core.warning("No CODEOWNERS file found, skipping.");
+    return;
+  }
   core.info(`Code-owners file found at: ${co.codeownersFilePath}`);
 
   if (!pr) {
@@ -149,7 +166,7 @@ class Actor {
     }
 
     this.cwd = core.getInput("cwd") || process.cwd();
-    this.octokit = getOctokit(process.env.GITHUB_TOKEN ?? "");
+    this.octokit = getOctokit(getGithubToken());
     this.thisRepo = { owner: context.repo.owner, repo: context.repo.repo };
     this.issue = issue;
     this.sender = sender;
@@ -310,7 +327,10 @@ class Actor {
 
 export const getFilesNotOwnedByCodeOwner = (owner: string, files: string[], cwd: string): string[] => {
   const filesWhichArentOwned: string[] = [];
-  const codeowners = new Codeowners(cwd);
+  const codeowners = tryNewCodeowners(cwd);
+  if (!codeowners) {
+    return [];
+  }
 
   for (const file of files) {
     const relative = file.startsWith("/") ? file.slice(1) : file;
@@ -326,7 +346,10 @@ export const getFilesNotOwnedByCodeOwner = (owner: string, files: string[], cwd:
 // This is a reasonable security measure for proving an account is specified in the codeowners
 // but SHOULD NOT be used for authentication for something which mutates the repo.
 export const githubLoginIsInCodeowners = (login: string, cwd: string): boolean => {
-  const codeowners = new Codeowners(cwd);
+  const codeowners = tryNewCodeowners(cwd);
+  if (!codeowners) {
+    return false;
+  }
   const contents = readFileSync(codeowners.codeownersFilePath, "utf8").toLowerCase();
   const loginLower = login.toLowerCase();
 
@@ -368,7 +391,10 @@ export const hasValidLgtmSubstring = (bodyLower: string): boolean => {
 };
 
 const listFilesWithOwners = (files: string[], cwd: string): void => {
-  const codeowners = new Codeowners(cwd);
+  const codeowners = tryNewCodeowners(cwd);
+  if (!codeowners) {
+    return;
+  }
   console.log("\nKnown code-owners for changed files:");
   for (const file of files) {
     const relative = file.startsWith("/") ? file.slice(1) : file;
@@ -384,12 +410,15 @@ export const findCodeOwnersForChangedFiles = (
 ): { users: string[]; labels: string[] } => {
   const owners = new Set<string>();
   const labels = new Set<string>();
-  const codeowners = new Codeowners(cwd);
+  const codeowners = tryNewCodeowners(cwd);
+  if (!codeowners) {
+    return { users: [], labels: [] };
+  }
 
   for (const file of changedFiles) {
     const relative = file.startsWith("/") ? file.slice(1) : file;
     const filesOwners = codeowners.getOwner(relative);
-    filesOwners.forEach((owner) => {
+    filesOwners.forEach((owner: string) => {
       if (owner.startsWith("@")) {
         owners.add(owner);
       }
