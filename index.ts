@@ -2,7 +2,8 @@ import * as core from "@actions/core";
 import { context, getOctokit } from "@actions/github";
 import Codeowners from "codeowners";
 
-import { readFileSync } from "fs";
+import { existsSync, readFileSync } from "fs";
+import { join } from "path";
 
 type Octokit = ReturnType<typeof getOctokit>;
 type PullsGetResponse = Awaited<ReturnType<Octokit["rest"]["pulls"]["get"]>>;
@@ -26,15 +27,14 @@ const githubServerUrl = process.env["GITHUB_SERVER_URL"] || "https://github.com"
 
 const getGithubToken = (): string => core.getInput("token") || process.env.GITHUB_TOKEN || "";
 
+const CODEOWNERS_PATHS = [".github/CODEOWNERS", ".gitlab/CODEOWNERS", "docs/CODEOWNERS", "CODEOWNERS"];
+
 const tryNewCodeowners = (cwd: string): InstanceType<typeof Codeowners> | null => {
-  try {
-    return new Codeowners(cwd);
-  } catch (error) {
-    if (error instanceof Error && error.message.toLowerCase().includes("no codeowners")) {
-      return null;
-    }
-    throw error;
+  if (!CODEOWNERS_PATHS.some((p) => existsSync(join(cwd, p)))) {
+    return null;
   }
+
+  return new Codeowners(cwd);
 };
 
 // eslint-disable-next-line complexity
@@ -329,7 +329,7 @@ export const getFilesNotOwnedByCodeOwner = (owner: string, files: string[], cwd:
   const filesWhichArentOwned: string[] = [];
   const codeowners = tryNewCodeowners(cwd);
   if (!codeowners) {
-    return [];
+    return files;
   }
 
   for (const file of files) {
@@ -491,6 +491,12 @@ const formatList = (items: string[]): string => {
 // Effectively the main function
 const run = async (): Promise<void> => {
   core.info("Running version 0.1.0");
+
+  const cwd = core.getInput("cwd") || process.cwd();
+  if (!tryNewCodeowners(cwd)) {
+    core.info("No CODEOWNERS file found, skipping.");
+    return;
+  }
 
   // Tell folks they can merge
   if (context.eventName === "pull_request_target") {
