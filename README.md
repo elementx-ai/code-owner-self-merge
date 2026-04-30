@@ -1,6 +1,8 @@
-A GitHub action that lets code-owners merge PRs via a comment.
+# Code Owner Self-Merge
 
-This action uses the standardized structure of [a CODEOWNERS file](https://github.blog/2017-07-06-introducing-code-owners/) to handle the access controls.
+A GitHub Action that lets code owners merge PRs by leaving a comment — no admin required.
+
+It uses the standardized structure of [a CODEOWNERS file](https://github.blog/2017-07-06-introducing-code-owners/) to determine who has merge rights over which files.
 
 <img src="screenshots/img.png">
 
