@@ -9,16 +9,8 @@
     "noEmit": true,
     "skipLibCheck": true,
     "resolveJsonModule": true,
-    "types": [
-      "node",
-      "jest"
-    ]
+    "types": ["node", "jest"]
   },
-  "include": [
-    "index.ts",
-    "index.test.ts"
-  ],
-  "exclude": [
-    "dist/**"
-  ]
+  "include": ["index.ts", "index.test.ts"],
+  "exclude": ["dist/**"]
 }
