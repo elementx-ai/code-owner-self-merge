@@ -6,33 +6,19 @@ This action uses the standardized structure of [a CODEOWNERS file](https://githu
 
 ## A simple example
 
-So, with this file at: `CODEOWNERS` or `.github/CODEOWNERS`:
+With this file at `CODEOWNERS` or `.github/CODEOWNERS`:
 
 ```sh
-README.md @orta
+README.md @your-username
 ```
 
-If a PR contained _only_ a change to the `README.md` - this action would say that "@orta has the ability to merge by commenting 'LGTM'".
+If a PR contained _only_ a change to `README.md`, this action would comment that `@your-username` has the ability to merge by commenting `LGTM`.
 
-Then, when/if this happens the GitHub Action will merge for you.
-
-## A real-world example
-
-`CODEOWNERS` or `.github/CODEOWNERS`:
-
-```sh
-# Collaborators for Japanese Translation of the Website
-packages/playground-examples/copy/ja/**/*.md @sasurau4 @Quramy @Naturalclar @Takepepe @orta
-packages/tsconfig-reference/copy/ja/**/*.md @sasurau4 @Quramy @Naturalclar @Takepepe @orta
-packages/typescriptlang-org/src/copy/ja/**/*.md @sasurau4 @Quramy @Naturalclar @Takepepe @orta
-packages/documentation/copy/ja/**/*.ts @sasurau4 @Quramy @Naturalclar @Takepepe @orta
-```
-
-This allows any of `@sasurau4`, `@Quramy`, `@Naturalclar`, `@Takepepe` or `@orta` to merge PRs which affect their areas of the translation process in the TypeScript Website repo. Code owners can use a [review](https://github.com/orta/code-owner-self-merge/pull/3), or a [comment](https://github.com/orta/code-owner-self-merge/pull/1) to merge.
+When that happens, the GitHub Action will merge the PR automatically.
 
 ## Setting It Up
 
-You want a unique workflow file, e.g. `.github/workflows/codeowners-merge.yml`
+Create a workflow file at `.github/workflows/codeowners-merge.yml`:
 
 ```yml
 name: Codeowners merging
@@ -53,15 +39,13 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 ```
 
-Then you should be good to go. Note that I might not have bumped the version in `^`, so double [check the releases.](https://github.com/OSS-Docs-Tools/code-owner-self-merge/releases). Also, given that this is a security focused GitHub Action, I'd recommend instead using commit references instead of `@x.y.z`.
-
 ### Security
 
 We force the use of [`pull_request_target`](https://github.blog/2020-08-03-github-actions-improvements-for-fork-and-pull-request-workflows/) as a workflow event to ensure that someone cannot change the CODEOWNER files at the same time as having that change be used to validate if they can merge.
 
 ### Issue / PR manipulation
 
-Merging a PR has strict security requirements, but closing a PR or Issue can have a weaker one. Anyone with a GitHub login in the CODEOWNER has the ability to close any PR / Issue via a comment/review which includes:
+Merging a PR has strict security requirements, but closing a PR or Issue can have a weaker one. Anyone with a GitHub login listed in the CODEOWNERS file has the ability to close any PR or Issue via a comment or review which includes:
 
 ```
 @github-actions close
@@ -73,58 +57,53 @@ A closed PR can be re-opened with:
 @github-actions reopen
 ```
 
-### Extras
+### Labels
 
-You can use this label to set labels for specific sections of the codebase, by having square brackets to indicate labels to make: `[label]`
+You can set labels for specific sections of the codebase by using square brackets in CODEOWNERS entries:
 
 ```sh
-# Collaborators for Spanish Translation of the Website
-packages/playground-examples/copy/es/**/*.md @KingDarBoja [translate] [es]
-packages/playground-examples/copy/es/**/*.ts @KingDarBoja [translate] [es]
-packages/tsconfig-reference/copy/es/**/*.md @KingDarBoja [translate] [es]
-packages/typescriptlang-org/src/copy/es/**/*.ts @KingDarBoja [translate] [es]
-packages/documentation/copy/es/**/*.ts @KingDarBoja [translate] [es]
+packages/docs/es/**/*.md @your-username [translate] [es]
 ```
 
 ## Config
 
-There are six options available at the moment:
+Available inputs for the action:
 
-- `cwd`, which can be used to determine the root folder to look for CODEOWNER files in.
-- `merge_method`, which can be `merge` (default), `squash` or `rebase`, depending on what you want the action to do.
-- `quiet` - does not output a message saying who can merge PRs
-- `ownerNoPings` - list of usernames to wrap mention in an inline code block to prevent pinging
-
-```yml
-- name: Run Codeowners merge check
-  uses: OSS-Docs-Tools/code-owner-self-merge@v1
-  env:
-    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-  with:
-    cwd: "./docs"
-    merge_method: "squash"
-```
-
-Then 2 for handling fallbacks on PRs which aren't able to be maintained by anyone in the CODEOWNERs:
-
-- `if_no_maintainers_add_label` - A label to add which denotes it is a maintainers PR to handle
-- `if_no_maintainers_assign` - A string of `@` prefixed GitHub usernames, separated by spaces which denotes who should be assigned to PRs which don't get a CODEOWNER.
+- `token` — GitHub token to use for API calls (falls back to `GITHUB_TOKEN` env var)
+- `cwd` — root folder to look for CODEOWNER files in
+- `merge_method` — `merge` (default), `squash`, or `rebase`
+- `quiet` — do not comment saying who can merge the PR
+- `ownerNoPings` — list of usernames to wrap in an inline code block to prevent pinging
+- `if_no_maintainers_add_label` — label to apply when no CODEOWNER covers the PR
+- `if_no_maintainers_assign` — space-separated `@username` list to assign when no CODEOWNER covers the PR
 
 ```yml
 - name: Run Codeowners merge check
-  uses: OSS-Docs-Tools/code-owner-self-merge@v1
+  uses: elementx-ai/code-owner-self-merge@main
   env:
     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   with:
     merge_method: "squash"
     if_no_maintainers_add_label: "maintainers"
-    if_no_maintainers_assign: "@orta @sandersn"
+    if_no_maintainers_assign: "@your-username"
 ```
 
-### Dev
+## Dev
 
-Use `npx jest --watch` to run tests.
+Run tests:
 
-### Deploy
+```sh
+npm test
+```
 
-Use the GH UI to make a tag and release.
+Build the distribution:
+
+```sh
+npm run build
+```
+
+The CI workflow (`build-and-test.yaml`) verifies that `dist/index.mjs` is up to date on every PR — run `npm run build` before pushing if you change `index.ts`.
+
+## Deploy
+
+Use the GitHub UI to create a tag and release.
