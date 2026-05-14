@@ -37344,8 +37344,7 @@ class Actor {
         info(`\n\nLooking at the ${context.eventName} from ${sender} in '${issue.title ?? ""}' to see if we can proceed`);
         const changedFiles = await getPRChangedFiles(octokit, thisRepo, issue.number);
         info(`Changed files: \n - ${changedFiles.join("\n - ")}`);
-        const effectiveOwners = await getEffectiveOwnerStrings(octokit, sender, cwd);
-        const filesWhichArentOwned = getFilesNotOwnedByEffectiveOwner(effectiveOwners, changedFiles, cwd);
+        const filesWhichArentOwned = getFilesNotOwnedByEffectiveOwner(await getEffectiveOwnerStrings(octokit, sender, cwd), changedFiles, cwd);
         if (filesWhichArentOwned.length !== 0) {
             console.log(`@${sender} does not have access to \n - ${filesWhichArentOwned.join("\n - ")}\n`);
             listFilesWithOwners(changedFiles, cwd);
@@ -37502,9 +37501,8 @@ const getFilesNotOwnedByCodeOwner = (owner, files, cwd) => {
 };
 const getFilesNotOwnedByEffectiveOwner = (effectiveOwners, files, cwd) => {
     const codeowners = tryNewCodeowners(cwd);
-    if (!codeowners) {
+    if (!codeowners)
         return files;
-    }
     return files.filter((file) => {
         const relative = file.startsWith("/") ? file.slice(1) : file;
         const owners = codeowners.getOwner(relative);
@@ -37516,32 +37514,28 @@ const getFilesNotOwnedByEffectiveOwner = (effectiveOwners, files, cwd) => {
 const getEffectiveOwnerStrings = async (octokit, username, cwd) => {
     const effective = [`@${username}`];
     const co = tryNewCodeowners(cwd);
-    if (!co) {
+    if (!co)
         return effective;
-    }
     const contents = readFileSync(co.codeownersFilePath, "utf8");
-    const teamPattern = /@([a-zA-Z0-9][a-zA-Z0-9-]*)\/([a-zA-Z0-9][a-zA-Z0-9_.-]*)/g;
-    const teams = new Set();
-    let match;
-    while ((match = teamPattern.exec(contents)) !== null) {
-        teams.add(`@${match[1]}/${match[2]}`);
+    const teamRe = /@([a-zA-Z0-9][a-zA-Z0-9-]*)\/([a-zA-Z0-9][a-zA-Z0-9_.-]*)/g;
+    const teams = new Map();
+    for (const m of contents.matchAll(teamRe)) {
+        teams.set(`@${m[1]}/${m[2]}`, { org: m[1], teamSlug: m[2] });
     }
-    await Promise.all(Array.from(teams).map(async (teamRef) => {
-        const [, org, teamSlug] = teamRef.match(/^@([^/]+)\/(.+)$/);
+    for (const [teamRef, { org, teamSlug }] of teams) {
         try {
             const { data } = await octokit.rest.teams.getMembershipForUserInOrg({
                 org,
                 team_slug: teamSlug,
                 username,
             });
-            if (data.state === "active") {
+            if (data.state === "active")
                 effective.push(teamRef);
-            }
         }
         catch {
-            // user is not a member or insufficient permissions — skip
+            // not a member or insufficient permissions
         }
-    }));
+    }
     return effective;
 };
 // This is a reasonable security measure for proving an account is specified in the codeowners

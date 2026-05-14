@@ -237,9 +237,8 @@ class Actor {
     );
     core.info(`Changed files: \n - ${changedFiles.join("\n - ")}`);
 
-    const effectiveOwners = await getEffectiveOwnerStrings(octokit, sender, cwd);
     const filesWhichArentOwned = getFilesNotOwnedByEffectiveOwner(
-      effectiveOwners,
+      await getEffectiveOwnerStrings(octokit, sender, cwd),
       changedFiles,
       cwd,
     );
@@ -439,9 +438,7 @@ export const getFilesNotOwnedByEffectiveOwner = (
   cwd: string,
 ): string[] => {
   const codeowners = tryNewCodeowners(cwd);
-  if (!codeowners) {
-    return files;
-  }
+  if (!codeowners) return files;
 
   return files.filter((file) => {
     const relative = file.startsWith("/") ? file.slice(1) : file;
@@ -458,35 +455,27 @@ export const getEffectiveOwnerStrings = async (
 ): Promise<string[]> => {
   const effective: string[] = [`@${username}`];
   const co = tryNewCodeowners(cwd);
-  if (!co) {
-    return effective;
-  }
+  if (!co) return effective;
 
   const contents = readFileSync(co.codeownersFilePath, "utf8");
-  const teamPattern = /@([a-zA-Z0-9][a-zA-Z0-9-]*)\/([a-zA-Z0-9][a-zA-Z0-9_.-]*)/g;
-  const teams = new Set<string>();
-  let match: RegExpExecArray | null;
-  while ((match = teamPattern.exec(contents)) !== null) {
-    teams.add(`@${match[1]}/${match[2]}`);
+  const teamRe = /@([a-zA-Z0-9][a-zA-Z0-9-]*)\/([a-zA-Z0-9][a-zA-Z0-9_.-]*)/g;
+  const teams = new Map<string, { org: string; teamSlug: string }>();
+  for (const m of contents.matchAll(teamRe)) {
+    teams.set(`@${m[1]}/${m[2]}`, { org: m[1]!, teamSlug: m[2]! });
   }
 
-  await Promise.all(
-    Array.from(teams).map(async (teamRef) => {
-      const [, org, teamSlug] = teamRef.match(/^@([^/]+)\/(.+)$/)!;
-      try {
-        const { data } = await octokit.rest.teams.getMembershipForUserInOrg({
-          org,
-          team_slug: teamSlug,
-          username,
-        });
-        if (data.state === "active") {
-          effective.push(teamRef);
-        }
-      } catch {
-        // user is not a member or insufficient permissions — skip
-      }
-    }),
-  );
+  for (const [teamRef, { org, teamSlug }] of teams) {
+    try {
+      const { data } = await octokit.rest.teams.getMembershipForUserInOrg({
+        org,
+        team_slug: teamSlug,
+        username,
+      });
+      if (data.state === "active") effective.push(teamRef);
+    } catch {
+      // not a member or insufficient permissions
+    }
+  }
 
   return effective;
 };
