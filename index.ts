@@ -237,8 +237,9 @@ class Actor {
     );
     core.info(`Changed files: \n - ${changedFiles.join("\n - ")}`);
 
-    const filesWhichArentOwned = getFilesNotOwnedByCodeOwner(
-      `@${sender}`,
+    const effectiveOwners = await getEffectiveOwnerStrings(octokit, sender, cwd);
+    const filesWhichArentOwned = getFilesNotOwnedByEffectiveOwner(
+      effectiveOwners,
       changedFiles,
       cwd,
     );
@@ -430,6 +431,64 @@ export const getFilesNotOwnedByCodeOwner = (
   }
 
   return filesWhichArentOwned;
+};
+
+export const getFilesNotOwnedByEffectiveOwner = (
+  effectiveOwners: string[],
+  files: string[],
+  cwd: string,
+): string[] => {
+  const codeowners = tryNewCodeowners(cwd);
+  if (!codeowners) {
+    return files;
+  }
+
+  return files.filter((file) => {
+    const relative = file.startsWith("/") ? file.slice(1) : file;
+    const owners = codeowners.getOwner(relative);
+    if (owners.length === 0) return false; // unowned = accessible to all
+    return !effectiveOwners.some((owner) => owners.includes(owner));
+  });
+};
+
+export const getEffectiveOwnerStrings = async (
+  octokit: Octokit,
+  username: string,
+  cwd: string,
+): Promise<string[]> => {
+  const effective: string[] = [`@${username}`];
+  const co = tryNewCodeowners(cwd);
+  if (!co) {
+    return effective;
+  }
+
+  const contents = readFileSync(co.codeownersFilePath, "utf8");
+  const teamPattern = /@([a-zA-Z0-9][a-zA-Z0-9-]*)\/([a-zA-Z0-9][a-zA-Z0-9_.-]*)/g;
+  const teams = new Set<string>();
+  let match: RegExpExecArray | null;
+  while ((match = teamPattern.exec(contents)) !== null) {
+    teams.add(`@${match[1]}/${match[2]}`);
+  }
+
+  await Promise.all(
+    Array.from(teams).map(async (teamRef) => {
+      const [, org, teamSlug] = teamRef.match(/^@([^/]+)\/(.+)$/)!;
+      try {
+        const { data } = await octokit.rest.teams.getMembershipForUserInOrg({
+          org,
+          team_slug: teamSlug,
+          username,
+        });
+        if (data.state === "active") {
+          effective.push(teamRef);
+        }
+      } catch {
+        // user is not a member or insufficient permissions — skip
+      }
+    }),
+  );
+
+  return effective;
 };
 
 // This is a reasonable security measure for proving an account is specified in the codeowners
