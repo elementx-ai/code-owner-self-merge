@@ -37524,7 +37524,7 @@ const getEffectiveOwnerStrings = async (octokit, username, changedFiles, cwd, re
         catch (err) {
             const status = err.status;
             if (status !== 404) {
-                warning(`Team membership check failed for ${teamRef}: ${String(err)}`);
+                throw new Error(`Team membership check for ${teamRef} failed (HTTP ${status ?? "unknown"}). Provide a token with read:org scope.`);
             }
         }
     }

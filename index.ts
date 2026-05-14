@@ -466,8 +466,8 @@ export const getEffectiveOwnerStrings = async (
     } catch (err) {
       const status = (err as { status?: number }).status;
       if (status !== 404) {
-        core.warning(
-          `Team membership check failed for ${teamRef}: ${String(err)}`,
+        throw new Error(
+          `Team membership check for ${teamRef} failed (HTTP ${status ?? "unknown"}). Provide a token with read:org scope.`,
         );
       }
     }
