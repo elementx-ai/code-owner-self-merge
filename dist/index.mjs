@@ -37341,10 +37341,11 @@ class Actor {
     }
     async getTargetPRIfHasAccess() {
         const { octokit, thisRepo, sender, issue, cwd } = this;
+        const org = thisRepo.owner;
         info(`\n\nLooking at the ${context.eventName} from ${sender} in '${issue.title ?? ""}' to see if we can proceed`);
         const changedFiles = await getPRChangedFiles(octokit, thisRepo, issue.number);
         info(`Changed files: \n - ${changedFiles.join("\n - ")}`);
-        const filesWhichArentOwned = getFilesNotOwnedByEffectiveOwner(await getEffectiveOwnerStrings(octokit, sender, changedFiles, cwd), changedFiles, cwd);
+        const filesWhichArentOwned = getFilesNotOwnedByEffectiveOwner(await getEffectiveOwnerStrings(octokit, sender, changedFiles, cwd, org), changedFiles, cwd);
         if (filesWhichArentOwned.length !== 0) {
             console.log(`@${sender} does not have access to \n - ${filesWhichArentOwned.join("\n - ")}\n`);
             listFilesWithOwners(changedFiles, cwd);
@@ -37497,19 +37498,17 @@ const getFilesNotOwnedByEffectiveOwner = (effectiveOwners, files, cwd) => {
         return !effectiveOwners.some((owner) => owners.includes(owner));
     });
 };
-const getEffectiveOwnerStrings = async (octokit, username, changedFiles, cwd) => {
+const getEffectiveOwnerStrings = async (octokit, username, changedFiles, cwd, repoOwner) => {
     const effective = [`@${username}`];
     const co = tryNewCodeowners(cwd);
     if (!co)
         return effective;
     const teams = new Map();
-    for (const file of changedFiles) {
-        const relative = file.startsWith("/") ? file.slice(1) : file;
-        for (const owner of co.getOwner(relative)) {
-            const m = owner.match(/^@([^/]+)\/(.+)$/);
-            if (m) {
-                teams.set(owner, { org: m[1], teamSlug: m[2] });
-            }
+    const ownersForFiles = changedFiles.flatMap((file) => co.getOwner(file.startsWith("/") ? file.slice(1) : file));
+    for (const owner of ownersForFiles) {
+        const m = owner.match(/^@([^/]+)\/(.+)$/);
+        if (m && m[1].toLowerCase() === repoOwner.toLowerCase()) {
+            teams.set(owner, { org: m[1], teamSlug: m[2] });
         }
     }
     for (const [teamRef, { org, teamSlug }] of teams) {

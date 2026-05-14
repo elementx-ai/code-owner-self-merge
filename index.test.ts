@@ -137,6 +137,7 @@ describe("getEffectiveOwnerStrings", () => {
       "kat-kleb",
       ["src/one.two.js"],
       "./test",
+      "some-org",
     );
     expect(result).toEqual(["@kat-kleb"]);
     expect(octokit.rest.teams.getMembershipForUserInOrg).not.toHaveBeenCalled();
@@ -149,6 +150,7 @@ describe("getEffectiveOwnerStrings", () => {
       "kat-kleb",
       ["/src/pages/events/page.astro"],
       "./test/team-codeowners-fixture",
+      "elementx-ai",
     );
     expect(result).toContain("@kat-kleb");
     expect(result).toContain("@elementx-ai/marketing");
@@ -168,6 +170,7 @@ describe("getEffectiveOwnerStrings", () => {
       "kat-kleb",
       ["/src/pages/events/page.astro"],
       "./test/team-codeowners-fixture",
+      "elementx-ai",
     );
     expect(result).toEqual(["@kat-kleb"]);
   });
@@ -179,8 +182,22 @@ describe("getEffectiveOwnerStrings", () => {
       "kat-kleb",
       ["/src/pages/events/page.astro"],
       "./test/team-codeowners-fixture",
+      "elementx-ai",
     );
     expect(result).toEqual(["@kat-kleb"]);
+  });
+
+  test("ignores teams belonging to a different org", async () => {
+    const octokit = makeOctokit(async () => ({ data: { state: "active" } }));
+    const result = await getEffectiveOwnerStrings(
+      octokit as any,
+      "kat-kleb",
+      ["/src/pages/events/page.astro"],
+      "./test/team-codeowners-fixture",
+      "other-org",
+    );
+    expect(result).toEqual(["@kat-kleb"]);
+    expect(octokit.rest.teams.getMembershipForUserInOrg).not.toHaveBeenCalled();
   });
 });
 
