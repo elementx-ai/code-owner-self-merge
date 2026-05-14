@@ -135,6 +135,7 @@ describe("getEffectiveOwnerStrings", () => {
     const result = await getEffectiveOwnerStrings(
       octokit as any,
       "kat-kleb",
+      ["src/one.two.js"],
       "./test",
     );
     expect(result).toEqual(["@kat-kleb"]);
@@ -146,6 +147,7 @@ describe("getEffectiveOwnerStrings", () => {
     const result = await getEffectiveOwnerStrings(
       octokit as any,
       "kat-kleb",
+      ["/src/pages/events/page.astro"],
       "./test/team-codeowners-fixture",
     );
     expect(result).toContain("@kat-kleb");
@@ -164,6 +166,7 @@ describe("getEffectiveOwnerStrings", () => {
     const result = await getEffectiveOwnerStrings(
       octokit as any,
       "kat-kleb",
+      ["/src/pages/events/page.astro"],
       "./test/team-codeowners-fixture",
     );
     expect(result).toEqual(["@kat-kleb"]);
@@ -174,6 +177,7 @@ describe("getEffectiveOwnerStrings", () => {
     const result = await getEffectiveOwnerStrings(
       octokit as any,
       "kat-kleb",
+      ["/src/pages/events/page.astro"],
       "./test/team-codeowners-fixture",
     );
     expect(result).toEqual(["@kat-kleb"]);

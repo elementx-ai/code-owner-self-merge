@@ -238,7 +238,7 @@ class Actor {
     core.info(`Changed files: \n - ${changedFiles.join("\n - ")}`);
 
     const filesWhichArentOwned = getFilesNotOwnedByEffectiveOwner(
-      await getEffectiveOwnerStrings(octokit, sender, cwd),
+      await getEffectiveOwnerStrings(octokit, sender, changedFiles, cwd),
       changedFiles,
       cwd,
     );
@@ -414,23 +414,7 @@ export const getFilesNotOwnedByCodeOwner = (
   owner: string,
   files: string[],
   cwd: string,
-): string[] => {
-  const filesWhichArentOwned: string[] = [];
-  const codeowners = tryNewCodeowners(cwd);
-  if (!codeowners) {
-    return files;
-  }
-
-  for (const file of files) {
-    const relative = file.startsWith("/") ? file.slice(1) : file;
-    const owners = codeowners.getOwner(relative);
-    if (owners.length > 0 && !owners.includes(owner)) {
-      filesWhichArentOwned.push(file);
-    }
-  }
-
-  return filesWhichArentOwned;
-};
+): string[] => getFilesNotOwnedByEffectiveOwner([owner], files, cwd);
 
 export const getFilesNotOwnedByEffectiveOwner = (
   effectiveOwners: string[],
@@ -451,17 +435,22 @@ export const getFilesNotOwnedByEffectiveOwner = (
 export const getEffectiveOwnerStrings = async (
   octokit: Octokit,
   username: string,
+  changedFiles: string[],
   cwd: string,
 ): Promise<string[]> => {
   const effective: string[] = [`@${username}`];
   const co = tryNewCodeowners(cwd);
   if (!co) return effective;
 
-  const contents = readFileSync(co.codeownersFilePath, "utf8");
-  const teamRe = /@([a-zA-Z0-9][a-zA-Z0-9-]*)\/([a-zA-Z0-9][a-zA-Z0-9_.-]*)/g;
   const teams = new Map<string, { org: string; teamSlug: string }>();
-  for (const m of contents.matchAll(teamRe)) {
-    teams.set(`@${m[1]}/${m[2]}`, { org: m[1]!, teamSlug: m[2]! });
+  for (const file of changedFiles) {
+    const relative = file.startsWith("/") ? file.slice(1) : file;
+    for (const owner of co.getOwner(relative)) {
+      const m = owner.match(/^@([^/]+)\/(.+)$/);
+      if (m) {
+        teams.set(owner, { org: m[1]!, teamSlug: m[2]! });
+      }
+    }
   }
 
   for (const [teamRef, { org, teamSlug }] of teams) {
@@ -472,8 +461,11 @@ export const getEffectiveOwnerStrings = async (
         username,
       });
       if (data.state === "active") effective.push(teamRef);
-    } catch {
-      // not a member or insufficient permissions
+    } catch (err) {
+      const status = (err as { status?: number }).status;
+      if (status !== 404) {
+        core.warning(`Team membership check failed for ${teamRef}: ${String(err)}`);
+      }
     }
   }
 
