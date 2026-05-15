@@ -5,4 +5,13 @@ export default [
   {
     ignores: ["dist/**", "jest.config.cjs", "rollup.config.mjs"],
   },
+  {
+    files: ["index.ts"],
+    rules: {
+      "max-lines": [
+        "error",
+        { max: 650, skipBlankLines: true, skipComments: true },
+      ],
+    },
+  },
 ];

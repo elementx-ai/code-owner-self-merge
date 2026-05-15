@@ -208,6 +208,34 @@ describe("getEffectiveOwnerStrings", () => {
     expect(result).toEqual(["@kat-kleb"]);
     expect(octokit.rest.teams.getMembershipForUserInOrg).not.toHaveBeenCalled();
   });
+
+  test("skips team lookup when @username already covers all files", async () => {
+    const octokit = makeOctokit(async () => ({ data: { state: "active" } }));
+    const result = await getEffectiveOwnerStrings(
+      octokit as any,
+      "kat-kleb",
+      ["/src/pages/events/page.astro"],
+      "./test/user-and-team-codeowners-fixture",
+      "elementx-ai",
+    );
+    expect(result).toEqual(["@kat-kleb"]);
+    expect(octokit.rest.teams.getMembershipForUserInOrg).not.toHaveBeenCalled();
+  });
+
+  test("rethrows on non-404 membership errors", async () => {
+    const octokit = makeOctokit(async () => {
+      throw { status: 403 };
+    });
+    await expect(
+      getEffectiveOwnerStrings(
+        octokit as any,
+        "kat-kleb",
+        ["/src/pages/events/page.astro"],
+        "./test/team-codeowners-fixture",
+        "elementx-ai",
+      ),
+    ).rejects.toThrow(/HTTP 403.*read:org/);
+  });
 });
 
 test("files with no designated owners are accessible to anyone", () => {

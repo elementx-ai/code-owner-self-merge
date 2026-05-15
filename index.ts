@@ -424,7 +424,6 @@ export const getFilesNotOwnedByEffectiveOwner = (
 ): string[] => {
   const codeowners = tryNewCodeowners(cwd);
   if (!codeowners) return files;
-
   const effLower = effectiveOwners.map((o) => o.toLowerCase());
   return files.filter((file) => {
     const relative = file.startsWith("/") ? file.slice(1) : file;
@@ -444,15 +443,21 @@ export const getEffectiveOwnerStrings = async (
   const co = tryNewCodeowners(cwd);
   if (!co) return effective;
 
+  const uncovered = getFilesNotOwnedByEffectiveOwner(
+    effective,
+    changedFiles,
+    cwd,
+  );
+  if (uncovered.length === 0) return effective;
+
   const teams = new Map<string, { org: string; teamSlug: string }>();
-  const ownersForFiles = changedFiles.flatMap((file) =>
+  const ownersForFiles = uncovered.flatMap((file) =>
     co.getOwner(file.startsWith("/") ? file.slice(1) : file),
   );
   for (const owner of ownersForFiles) {
     const m = owner.match(/^@([^/]+)\/(.+)$/);
-    if (m && m[1]!.toLowerCase() === repoOwner.toLowerCase()) {
-      teams.set(owner, { org: m[1]!, teamSlug: m[2]! });
-    }
+    if (!m || m[1]!.toLowerCase() !== repoOwner.toLowerCase()) continue;
+    teams.set(owner, { org: m[1]!, teamSlug: m[2]! });
   }
 
   for (const [teamRef, { org, teamSlug }] of teams) {
@@ -467,14 +472,12 @@ export const getEffectiveOwnerStrings = async (
       effective.push(teamRef);
     } catch (err) {
       const status = (err as { status?: number }).status;
-      if (status !== 404) {
-        throw new Error(
-          `Team membership check for ${teamRef} failed (HTTP ${status ?? "unknown"}). Provide a token with read:org scope.`,
-        );
-      }
+      if (status === 404) continue;
+      throw new Error(
+        `Team membership check for ${teamRef} failed (HTTP ${status}). Provide a token with read:org scope.`,
+      );
     }
   }
-
   return effective;
 };
 
