@@ -45,6 +45,21 @@ jobs:
 
 We force the use of [`pull_request_target`](https://github.blog/2020-08-03-github-actions-improvements-for-fork-and-pull-request-workflows/) as a workflow event to ensure that someone cannot change the CODEOWNER files at the same time as having that change be used to validate if they can merge.
 
+### Team-based CODEOWNERS
+
+If your CODEOWNERS file references GitHub teams (e.g. `* @your-org/maintainers`), the action resolves team membership at runtime via the GitHub API so that any active member of the team can authorise a merge.
+
+This requires a token with the `read:org` scope. The default `GITHUB_TOKEN` issued to workflow runs does **not** have this scope, so you'll need to supply a Personal Access Token (or a GitHub App installation token with the appropriate permission) via the `token` input:
+
+```yml
+- name: Run Codeowners merge check
+  uses: elementx-ai/code-owner-self-merge@main
+  with:
+    token: ${{ secrets.CODEOWNERS_TOKEN }}
+```
+
+If a team membership lookup fails with anything other than a 404, the action will fail the run rather than silently denying the merge — fix the token scope and retry.
+
 ### Issue / PR manipulation
 
 Merging a PR has strict security requirements, but closing a PR or Issue can have a weaker one. Anyone with a GitHub login listed in the CODEOWNERS file has the ability to close any PR or Issue via a comment or review which includes:

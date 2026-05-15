@@ -1,8 +1,10 @@
-import { describe, expect, test } from "@jest/globals";
+import { describe, expect, jest, test } from "@jest/globals";
 
 import {
   findCodeOwnersForChangedFiles,
+  getEffectiveOwnerStrings,
   getFilesNotOwnedByCodeOwner,
+  getFilesNotOwnedByEffectiveOwner,
   githubLoginIsInCodeowners,
   hasValidLgtmSubstring,
 } from "./index.js";
@@ -64,6 +66,176 @@ test("deciding if someone has access to merge", () => {
     "./test",
   );
   expect(filesNotInCodeowners).toEqual(["random-path/file.ts"]);
+});
+
+describe("getFilesNotOwnedByEffectiveOwner", () => {
+  test("returns empty when an effective owner string matches", () => {
+    const result = getFilesNotOwnedByEffectiveOwner(
+      ["@nobody", "@two"],
+      ["src/one.two.js"],
+      "./test",
+    );
+    expect(result).toEqual([]);
+  });
+
+  test("returns files when no effective owner matches", () => {
+    const result = getFilesNotOwnedByEffectiveOwner(
+      ["@nobody", "@also-nobody"],
+      ["src/one.two.js"],
+      "./test",
+    );
+    expect(result).toEqual(["src/one.two.js"]);
+  });
+
+  test("returns empty for unowned files (no owner = open to all)", () => {
+    const result = getFilesNotOwnedByEffectiveOwner(
+      ["@nobody"],
+      ["package.json"],
+      "./test",
+    );
+    expect(result).toEqual([]);
+  });
+
+  test("returns empty when team owner string matches in team fixture", () => {
+    const result = getFilesNotOwnedByEffectiveOwner(
+      ["@kat-kleb", "@elementx-ai/marketing"],
+      ["/src/pages/events/page.astro"],
+      "./test/team-codeowners-fixture",
+    );
+    expect(result).toEqual([]);
+  });
+
+  test("returns files when neither individual nor team matches", () => {
+    const result = getFilesNotOwnedByEffectiveOwner(
+      ["@kat-kleb"],
+      ["/src/pages/events/page.astro"],
+      "./test/team-codeowners-fixture",
+    );
+    expect(result).toEqual(["/src/pages/events/page.astro"]);
+  });
+
+  test("matches owners case-insensitively", () => {
+    const result = getFilesNotOwnedByEffectiveOwner(
+      ["@ElementX-AI/Marketing"],
+      ["/src/pages/events/page.astro"],
+      "./test/team-codeowners-fixture",
+    );
+    expect(result).toEqual([]);
+  });
+});
+
+describe("getEffectiveOwnerStrings", () => {
+  const makeOctokit = (
+    handler: (args: {
+      org: string;
+      team_slug: string;
+      username: string;
+    }) => Promise<{ data: { state: string } }>,
+  ) => ({
+    rest: {
+      teams: {
+        getMembershipForUserInOrg: jest.fn(handler),
+      },
+    },
+  });
+
+  test("returns only @username when CODEOWNERS has no team entries", async () => {
+    const octokit = makeOctokit(async () => ({ data: { state: "active" } }));
+    const result = await getEffectiveOwnerStrings(
+      octokit as any,
+      "kat-kleb",
+      ["src/one.two.js"],
+      "./test",
+      "some-org",
+    );
+    expect(result).toEqual(["@kat-kleb"]);
+    expect(octokit.rest.teams.getMembershipForUserInOrg).not.toHaveBeenCalled();
+  });
+
+  test("includes team string when user is an active member", async () => {
+    const octokit = makeOctokit(async () => ({ data: { state: "active" } }));
+    const result = await getEffectiveOwnerStrings(
+      octokit as any,
+      "kat-kleb",
+      ["/src/pages/events/page.astro"],
+      "./test/team-codeowners-fixture",
+      "elementx-ai",
+    );
+    expect(result).toContain("@kat-kleb");
+    expect(result).toContain("@elementx-ai/marketing");
+    expect(octokit.rest.teams.getMembershipForUserInOrg).toHaveBeenCalledWith({
+      org: "elementx-ai",
+      team_slug: "marketing",
+      username: "kat-kleb",
+    });
+  });
+
+  test("excludes team when user is not a member (API throws 404)", async () => {
+    const octokit = makeOctokit(async () => {
+      throw { status: 404 };
+    });
+    const result = await getEffectiveOwnerStrings(
+      octokit as any,
+      "kat-kleb",
+      ["/src/pages/events/page.astro"],
+      "./test/team-codeowners-fixture",
+      "elementx-ai",
+    );
+    expect(result).toEqual(["@kat-kleb"]);
+  });
+
+  test("excludes team when membership state is pending", async () => {
+    const octokit = makeOctokit(async () => ({ data: { state: "pending" } }));
+    const result = await getEffectiveOwnerStrings(
+      octokit as any,
+      "kat-kleb",
+      ["/src/pages/events/page.astro"],
+      "./test/team-codeowners-fixture",
+      "elementx-ai",
+    );
+    expect(result).toEqual(["@kat-kleb"]);
+  });
+
+  test("ignores teams belonging to a different org", async () => {
+    const octokit = makeOctokit(async () => ({ data: { state: "active" } }));
+    const result = await getEffectiveOwnerStrings(
+      octokit as any,
+      "kat-kleb",
+      ["/src/pages/events/page.astro"],
+      "./test/team-codeowners-fixture",
+      "other-org",
+    );
+    expect(result).toEqual(["@kat-kleb"]);
+    expect(octokit.rest.teams.getMembershipForUserInOrg).not.toHaveBeenCalled();
+  });
+
+  test("skips team lookup when @username already covers all files", async () => {
+    const octokit = makeOctokit(async () => ({ data: { state: "active" } }));
+    const result = await getEffectiveOwnerStrings(
+      octokit as any,
+      "kat-kleb",
+      ["/src/pages/events/page.astro"],
+      "./test/user-and-team-codeowners-fixture",
+      "elementx-ai",
+    );
+    expect(result).toEqual(["@kat-kleb"]);
+    expect(octokit.rest.teams.getMembershipForUserInOrg).not.toHaveBeenCalled();
+  });
+
+  test("rethrows on non-404 membership errors", async () => {
+    const octokit = makeOctokit(async () => {
+      throw { status: 403 };
+    });
+    await expect(
+      getEffectiveOwnerStrings(
+        octokit as any,
+        "kat-kleb",
+        ["/src/pages/events/page.astro"],
+        "./test/team-codeowners-fixture",
+        "elementx-ai",
+      ),
+    ).rejects.toThrow(/HTTP 403.*read:org/);
+  });
 });
 
 test("files with no designated owners are accessible to anyone", () => {

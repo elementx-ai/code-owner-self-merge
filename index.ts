@@ -226,6 +226,7 @@ class Actor {
 
   async getTargetPRIfHasAccess(): Promise<PullsGetResponse | undefined> {
     const { octokit, thisRepo, sender, issue, cwd } = this;
+    const org = thisRepo.owner;
     core.info(
       `\n\nLooking at the ${context.eventName} from ${sender} in '${issue.title ?? ""}' to see if we can proceed`,
     );
@@ -237,8 +238,8 @@ class Actor {
     );
     core.info(`Changed files: \n - ${changedFiles.join("\n - ")}`);
 
-    const filesWhichArentOwned = getFilesNotOwnedByCodeOwner(
-      `@${sender}`,
+    const filesWhichArentOwned = getFilesNotOwnedByEffectiveOwner(
+      await getEffectiveOwnerStrings(octokit, sender, changedFiles, cwd, org),
       changedFiles,
       cwd,
     );
@@ -414,22 +415,70 @@ export const getFilesNotOwnedByCodeOwner = (
   owner: string,
   files: string[],
   cwd: string,
+): string[] => getFilesNotOwnedByEffectiveOwner([owner], files, cwd);
+
+export const getFilesNotOwnedByEffectiveOwner = (
+  effectiveOwners: string[],
+  files: string[],
+  cwd: string,
 ): string[] => {
-  const filesWhichArentOwned: string[] = [];
   const codeowners = tryNewCodeowners(cwd);
-  if (!codeowners) {
-    return files;
+  if (!codeowners) return files;
+  const effLower = effectiveOwners.map((o) => o.toLowerCase());
+  return files.filter((file) => {
+    const relative = file.startsWith("/") ? file.slice(1) : file;
+    const owners = codeowners.getOwner(relative).map((o) => o.toLowerCase());
+    return owners.length > 0 && !effLower.some((e) => owners.includes(e));
+  });
+};
+
+export const getEffectiveOwnerStrings = async (
+  octokit: Octokit,
+  username: string,
+  changedFiles: string[],
+  cwd: string,
+  repoOwner: string,
+): Promise<string[]> => {
+  const effective: string[] = [`@${username}`];
+  const co = tryNewCodeowners(cwd);
+  if (!co) return effective;
+
+  const uncovered = getFilesNotOwnedByEffectiveOwner(
+    effective,
+    changedFiles,
+    cwd,
+  );
+  if (uncovered.length === 0) return effective;
+
+  const teams = new Map<string, { org: string; teamSlug: string }>();
+  const ownersForFiles = uncovered.flatMap((file) =>
+    co.getOwner(file.startsWith("/") ? file.slice(1) : file),
+  );
+  for (const owner of ownersForFiles) {
+    const m = owner.match(/^@([^/]+)\/(.+)$/);
+    if (!m || m[1]!.toLowerCase() !== repoOwner.toLowerCase()) continue;
+    teams.set(owner, { org: m[1]!, teamSlug: m[2]! });
   }
 
-  for (const file of files) {
-    const relative = file.startsWith("/") ? file.slice(1) : file;
-    const owners = codeowners.getOwner(relative);
-    if (owners.length > 0 && !owners.includes(owner)) {
-      filesWhichArentOwned.push(file);
+  for (const [teamRef, { org, teamSlug }] of teams) {
+    try {
+      const { data } = await octokit.rest.teams.getMembershipForUserInOrg({
+        org,
+        team_slug: teamSlug,
+        username,
+      });
+      if (data.state !== "active") continue;
+      core.info(`@${username} is an active member of ${teamRef}`);
+      effective.push(teamRef);
+    } catch (err) {
+      const status = (err as { status?: number }).status;
+      if (status === 404) continue;
+      throw new Error(
+        `Team membership check for ${teamRef} failed (HTTP ${status}). Provide a token with read:org scope.`,
+      );
     }
   }
-
-  return filesWhichArentOwned;
+  return effective;
 };
 
 // This is a reasonable security measure for proving an account is specified in the codeowners
