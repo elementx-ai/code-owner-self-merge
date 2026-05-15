@@ -425,12 +425,12 @@ export const getFilesNotOwnedByEffectiveOwner = (
   const codeowners = tryNewCodeowners(cwd);
   if (!codeowners) return files;
 
-  const lacksEffectiveOwner = (file: string): boolean => {
+  const effLower = effectiveOwners.map((o) => o.toLowerCase());
+  return files.filter((file) => {
     const relative = file.startsWith("/") ? file.slice(1) : file;
     const owners = codeowners.getOwner(relative).map((o) => o.toLowerCase());
-    return owners.length > 0 && !effectiveOwners.some((e) => owners.includes(e.toLowerCase()));
-  };
-  return files.filter(lacksEffectiveOwner);
+    return owners.length > 0 && !effLower.some((e) => owners.includes(e));
+  });
 };
 
 export const getEffectiveOwnerStrings = async (
