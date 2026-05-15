@@ -425,12 +425,12 @@ export const getFilesNotOwnedByEffectiveOwner = (
   const codeowners = tryNewCodeowners(cwd);
   if (!codeowners) return files;
 
-  return files.filter((file) => {
+  const lacksEffectiveOwner = (file: string): boolean => {
     const relative = file.startsWith("/") ? file.slice(1) : file;
-    const owners = codeowners.getOwner(relative);
-    if (owners.length === 0) return false; // unowned = accessible to all
-    return !effectiveOwners.some((owner) => owners.includes(owner));
-  });
+    const owners = codeowners.getOwner(relative).map((o) => o.toLowerCase());
+    return owners.length > 0 && !effectiveOwners.some((e) => owners.includes(e.toLowerCase()));
+  };
+  return files.filter(lacksEffectiveOwner);
 };
 
 export const getEffectiveOwnerStrings = async (
@@ -462,7 +462,9 @@ export const getEffectiveOwnerStrings = async (
         team_slug: teamSlug,
         username,
       });
-      if (data.state === "active") effective.push(teamRef);
+      if (data.state !== "active") continue;
+      core.info(`@${username} is an active member of ${teamRef}`);
+      effective.push(teamRef);
     } catch (err) {
       const status = (err as { status?: number }).status;
       if (status !== 404) {

@@ -1,37 +1,37 @@
-import * as os from 'os';
-import os__default, { EOL } from 'os';
+import require$$6$1 from 'assert';
+import 'child_process';
 import 'crypto';
+import events$1 from 'events';
 import * as fs from 'fs';
-import fs__default, { promises, existsSync, readFileSync } from 'fs';
-import path, { join } from 'path';
+import fs__default, { existsSync, promises, readFileSync } from 'fs';
 import http from 'http';
 import https from 'https';
 import 'net';
-import require$$1 from 'tls';
-import events$1 from 'events';
-import require$$6$1 from 'assert';
-import require$$6 from 'util';
 import require$$0$1 from 'node:assert';
-import require$$0$3 from 'node:net';
-import require$$2 from 'node:http';
-import require$$0$2 from 'node:stream';
+import require$$5$2 from 'node:async_hooks';
 import require$$0 from 'node:buffer';
-import require$$0$4 from 'node:util';
-import require$$7 from 'node:querystring';
-import require$$8 from 'node:events';
+import require$$1$4 from 'node:console';
 import require$$0$5 from 'node:diagnostics_channel';
-import require$$5 from 'node:tls';
-import require$$1$2 from 'node:zlib';
+import require$$1$5 from 'node:dns';
+import require$$8 from 'node:events';
+import require$$2 from 'node:http';
+import require$$0$3 from 'node:net';
 import require$$5$1 from 'node:perf_hooks';
+import require$$7 from 'node:querystring';
+import require$$0$2 from 'node:stream';
+import require$$5 from 'node:tls';
+import require$$1$3 from 'node:url';
+import require$$0$4 from 'node:util';
 import require$$8$1 from 'node:util/types';
 import require$$1$1 from 'node:worker_threads';
-import require$$1$3 from 'node:url';
-import require$$5$2 from 'node:async_hooks';
-import require$$1$4 from 'node:console';
-import require$$1$5 from 'node:dns';
+import require$$1$2 from 'node:zlib';
+import * as os from 'os';
+import os__default, { EOL } from 'os';
+import path, { join } from 'path';
 import require$$5$3 from 'string_decoder';
-import 'child_process';
 import 'timers';
+import require$$1 from 'tls';
+import require$$6 from 'util';
 
 // We use any as a valid input type
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -3569,7 +3569,7 @@ function requireUtils () {
 	    return res;
 	}
 	utils.enumToMap = enumToMap;
-	
+
 	return utils;
 }
 
@@ -3849,7 +3849,7 @@ function requireConstants$3 () {
 		    'transfer-encoding': HEADER_STATE.TRANSFER_ENCODING,
 		    'upgrade': HEADER_STATE.UPGRADE,
 		};
-		
+
 	} (constants$3));
 	return constants$3;
 }
@@ -28272,7 +28272,7 @@ function requireProxy () {
 	        return this._decodedPassword;
 	    }
 	}
-	
+
 	return proxy;
 }
 
@@ -29016,7 +29016,7 @@ function requireLib () {
 	}
 	lib.HttpClient = HttpClient;
 	const lowercaseKeys = (obj) => Object.keys(obj).reduce((c, k) => ((c[k.toLowerCase()] = obj[k]), c), {});
-	
+
 	return lib;
 }
 
@@ -37490,13 +37490,12 @@ const getFilesNotOwnedByEffectiveOwner = (effectiveOwners, files, cwd) => {
     const codeowners = tryNewCodeowners(cwd);
     if (!codeowners)
         return files;
-    return files.filter((file) => {
+    const lacksEffectiveOwner = (file) => {
         const relative = file.startsWith("/") ? file.slice(1) : file;
-        const owners = codeowners.getOwner(relative);
-        if (owners.length === 0)
-            return false; // unowned = accessible to all
-        return !effectiveOwners.some((owner) => owners.includes(owner));
-    });
+        const owners = codeowners.getOwner(relative).map((o) => o.toLowerCase());
+        return owners.length > 0 && !effectiveOwners.some((e) => owners.includes(e.toLowerCase()));
+    };
+    return files.filter(lacksEffectiveOwner);
 };
 const getEffectiveOwnerStrings = async (octokit, username, changedFiles, cwd, repoOwner) => {
     const effective = [`@${username}`];
@@ -37518,8 +37517,10 @@ const getEffectiveOwnerStrings = async (octokit, username, changedFiles, cwd, re
                 team_slug: teamSlug,
                 username,
             });
-            if (data.state === "active")
-                effective.push(teamRef);
+            if (data.state !== "active")
+                continue;
+            info(`@${username} is an active member of ${teamRef}`);
+            effective.push(teamRef);
         }
         catch (err) {
             const status = err.status;

@@ -113,6 +113,15 @@ describe("getFilesNotOwnedByEffectiveOwner", () => {
     );
     expect(result).toEqual(["/src/pages/events/page.astro"]);
   });
+
+  test("matches owners case-insensitively", () => {
+    const result = getFilesNotOwnedByEffectiveOwner(
+      ["@ElementX-AI/Marketing"],
+      ["/src/pages/events/page.astro"],
+      "./test/team-codeowners-fixture",
+    );
+    expect(result).toEqual([]);
+  });
 });
 
 describe("getEffectiveOwnerStrings", () => {
