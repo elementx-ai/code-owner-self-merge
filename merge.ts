@@ -3,6 +3,11 @@
 // API that stacked PRs require.
 import type { getOctokit } from "@actions/github";
 
+// Appended to a failed stacked merge: GitHub doesn't support ruleset bypass
+// for stacks, which is how self-merge usually gets past code owner review.
+export const stackedBypassNote =
+  "\n\nThis PR is stacked, and GitHub doesn't let the merging app bypass the base branch's rules for stacked PRs. Rules such as a required code owner review have to be met directly, or the PR unstacked.";
+
 export type MergeMethod = "merge" | "squash" | "rebase";
 
 // Not yet in @octokit/openapi-types: the `stack` field on a pull request, the
@@ -73,12 +78,11 @@ const sleep = (ms: number): Promise<void> =>
 // Merges through the async merge API, which stacked PRs require (the classic
 // endpoint rejects them) and which works for unstacked PRs too. Polls until
 // the merge settles or `timeoutMs` passes, returning the last result seen.
-// Returns undefined if the API isn't available (404), e.g. on older GHES.
 export const mergePullRequestAsync = async (
   octokit: RequestLike,
   options: AsyncMergeOptions,
   { pollIntervalMs = 2000, timeoutMs = 60_000 } = {},
-): Promise<AsyncMergeResult | undefined> => {
+): Promise<AsyncMergeResult> => {
   const { owner, repo } = options;
   let result: AsyncMergeResult;
   try {
@@ -89,7 +93,11 @@ export const mergePullRequestAsync = async (
     result = response.data as AsyncMergeResult;
   } catch (error) {
     const status = (error as { status?: number }).status;
-    if (status === 404) return undefined;
+    if (status === 404) {
+      throw new Error(
+        "The async merge API, which stacked PRs require, isn't available.",
+      );
+    }
     if (status === 409) {
       throw new Error("A merge is already in progress for this PR.");
     }
