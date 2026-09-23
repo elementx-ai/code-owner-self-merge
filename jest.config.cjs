@@ -7,7 +7,7 @@ const config = {
     "^.+\\.ts$": ["ts-jest", { useESM: true }],
   },
   moduleNameMapper: {
-    "^\\./index\\.js$": "<rootDir>/index.ts",
+    "^\\./(index|merge)\\.js$": "<rootDir>/$1.ts",
   },
   testMatch: ["<rootDir>/**/*.test.ts"],
 };

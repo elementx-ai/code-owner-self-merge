@@ -1,5 +1,7 @@
 import { describe, expect, jest, test } from "@jest/globals";
 
+import { getMergeRange, mergePullRequestAsync } from "./merge.js";
+
 import {
   findCodeOwnersForChangedFiles,
   getEffectiveOwnerStrings,
@@ -373,5 +375,160 @@ describe("hasValidLgtmSubstring", () => {
   test("denies lgtm in inline code blocks", () => {
     const isValidSubstring = hasValidLgtmSubstring("lgtm`");
     expect(isValidSubstring).toEqual(false);
+  });
+});
+
+describe("getMergeRange", () => {
+  const repo = { owner: "elementx-ai", repo: "app" };
+  const stackMember = (number: number, merged = false) => ({
+    number,
+    state: merged ? "closed" : "open",
+    draft: false,
+    merged_at: merged ? "2026-09-01T00:00:00Z" : null,
+  });
+  const makeOctokit = (pullRequests: ReturnType<typeof stackMember>[]) => ({
+    request: jest.fn(async (..._args: unknown[]) => ({
+      data: { pull_requests: pullRequests },
+    })),
+  });
+
+  test("an unstacked PR is only itself, without calling the Stacks API", async () => {
+    const octokit = makeOctokit([]);
+    expect(await getMergeRange(octokit as any, repo, { number: 7 })).toEqual([
+      7,
+    ]);
+    expect(octokit.request).not.toHaveBeenCalled();
+  });
+
+  test("a stacked PR includes every PR below it, but none above", async () => {
+    const octokit = makeOctokit([10, 11, 12, 13].map((n) => stackMember(n)));
+    const pr = { number: 12, stack: { number: 9, size: 4, position: 3 } };
+    expect(await getMergeRange(octokit as any, repo, pr)).toEqual([10, 11, 12]);
+    expect(octokit.request).toHaveBeenCalledWith(
+      "GET /repos/{owner}/{repo}/stacks/{stack_number}",
+      { owner: "elementx-ai", repo: "app", stack_number: 9 },
+    );
+  });
+
+  test("skips PRs below that have already merged", async () => {
+    const octokit = makeOctokit([
+      stackMember(10, true),
+      stackMember(11),
+      stackMember(12),
+    ]);
+    const pr = { number: 12, stack: { number: 9, size: 3, position: 3 } };
+    expect(await getMergeRange(octokit as any, repo, pr)).toEqual([11, 12]);
+  });
+
+  test("the bottom PR of a stack is only itself", async () => {
+    const octokit = makeOctokit([10, 11].map((n) => stackMember(n)));
+    const pr = { number: 10, stack: { number: 9, size: 2, position: 1 } };
+    expect(await getMergeRange(octokit as any, repo, pr)).toEqual([10]);
+  });
+
+  test("refuses when the PR isn't in the stack it claims", async () => {
+    const octokit = makeOctokit([10, 11].map((n) => stackMember(n)));
+    const pr = { number: 12, stack: { number: 9, size: 2, position: 3 } };
+    await expect(getMergeRange(octokit as any, repo, pr)).rejects.toThrow(
+      /not in stack #9/,
+    );
+  });
+});
+
+describe("mergePullRequestAsync", () => {
+  const options = {
+    owner: "elementx-ai",
+    repo: "app",
+    pull_number: 12,
+    merge_method: "squash" as const,
+    commit_message: "Co-authored-by: someone",
+    sha: "abc123",
+  };
+  const fast = { pollIntervalMs: 1, timeoutMs: 1000 };
+
+  test("submits to the async endpoint and returns an immediate result", async () => {
+    const octokit = {
+      request: jest.fn(async (..._args: unknown[]) => ({
+        data: { status: "merged", details: { sha: "def456" } },
+      })),
+    };
+    const result = await mergePullRequestAsync(octokit as any, options, fast);
+    expect(result?.status).toBe("merged");
+    expect(octokit.request).toHaveBeenCalledTimes(1);
+    expect(octokit.request).toHaveBeenCalledWith(
+      "PUT /repos/{owner}/{repo}/pulls/{pull_number}/merge-async",
+      { ...options, merge_action: "default" },
+    );
+  });
+
+  test("polls a pending merge until it settles", async () => {
+    const responses = [
+      { status: "pending", details: { uuid: "u-1" } },
+      { status: "pending", details: { uuid: "u-1" } },
+      { status: "merged", details: { sha: "def456" } },
+    ];
+    const octokit = {
+      request: jest.fn(async (..._args: unknown[]) => ({
+        data: responses.shift(),
+      })),
+    };
+    const result = await mergePullRequestAsync(octokit as any, options, fast);
+    expect(result?.status).toBe("merged");
+    expect(octokit.request).toHaveBeenLastCalledWith(
+      "GET /repos/{owner}/{repo}/pulls/{pull_number}/merge-async/{uuid}",
+      { owner: "elementx-ai", repo: "app", pull_number: 12, uuid: "u-1" },
+    );
+  });
+
+  test("returns a failed result with GitHub's reason", async () => {
+    const responses = [
+      { status: "pending", details: { uuid: "u-1" } },
+      { status: "failed", details: { message: "Required checks failed" } },
+    ];
+    const octokit = {
+      request: jest.fn(async (..._args: unknown[]) => ({
+        data: responses.shift(),
+      })),
+    };
+    const result = await mergePullRequestAsync(octokit as any, options, fast);
+    expect(result).toEqual({
+      status: "failed",
+      details: { message: "Required checks failed" },
+    });
+  });
+
+  test("gives up polling at the timeout and reports still pending", async () => {
+    const octokit = {
+      request: jest.fn(async (..._args: unknown[]) => ({
+        data: { status: "pending", details: { uuid: "u-1" } },
+      })),
+    };
+    const result = await mergePullRequestAsync(octokit as any, options, {
+      pollIntervalMs: 5,
+      timeoutMs: 20,
+    });
+    expect(result?.status).toBe("pending");
+  });
+
+  test("returns undefined when the async API isn't available", async () => {
+    const octokit = {
+      request: jest.fn(async (..._args: unknown[]) => {
+        throw { status: 404 };
+      }),
+    };
+    expect(
+      await mergePullRequestAsync(octokit as any, options, fast),
+    ).toBeUndefined();
+  });
+
+  test("explains a conflicting in-flight merge", async () => {
+    const octokit = {
+      request: jest.fn(async (..._args: unknown[]) => {
+        throw { status: 409 };
+      }),
+    };
+    await expect(
+      mergePullRequestAsync(octokit as any, options, fast),
+    ).rejects.toThrow(/already in progress/);
   });
 });

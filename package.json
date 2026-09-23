@@ -6,7 +6,7 @@
   "license": "MIT",
   "scripts": {
     "format": "prettier --write . --ignore-unknown",
-    "lint": "eslint index.ts index.test.ts",
+    "lint": "eslint index.ts merge.ts index.test.ts",
     "build": "rollup --config rollup.config.mjs",
     "test": "NODE_OPTIONS=--experimental-vm-modules npx jest --config jest.config.cjs"
   },
