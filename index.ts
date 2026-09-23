@@ -352,7 +352,8 @@ class Actor {
           );
         }
         // Older GitHub Enterprise Server without the async merge API
-        await octokit.rest.pulls.merge(mergeOptions);
+        const { data } = await octokit.rest.pulls.merge(mergeOptions);
+        if (!data.merged) throw new Error(data.message);
         result = { status: "merged", details: {} };
       }
       await this.reportMergeResult(result, range);

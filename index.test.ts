@@ -613,6 +613,13 @@ describe("findChangesSinceChecks", () => {
     ).toMatch(/stack changed/);
   });
 
+  test("reports the target PR getting new commits", async () => {
+    const octokit = makeOctokit({ 10: "a", 11: "b2" }, [10, 11]);
+    expect(
+      await findChangesSinceChecks(octokit as any, repo, authorised),
+    ).toMatch(/#11 got new commits/);
+  });
+
   test("reports a lower PR that got new commits", async () => {
     const octokit = makeOctokit({ 10: "a2", 11: "b" }, [10, 11]);
     expect(

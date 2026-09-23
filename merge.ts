@@ -242,9 +242,10 @@ export const findMovedHeads = async (
     .map((pr) => pr.number);
 };
 
-// The async merge API pins only the target PR's head SHA, but a stack merge
-// also lands the PRs below it. Just before merging, returns why the range is
-// no longer what was authorised in `prs` (target last), if it isn't.
+// Files are listed after `prs` is fetched, and the async merge API pins only
+// the target's head SHA while a stack merge also lands the PRs below it. Just
+// before merging, returns why the range is no longer what was authorised in
+// `prs` (target last), if it isn't.
 export const findChangesSinceChecks = async (
   octokit: Octokit,
   repo: RepoRef,
@@ -262,7 +263,7 @@ export const findChangesSinceChecks = async (
   if (!unchanged) {
     return "the stack changed after the checks ran.";
   }
-  const moved = await findMovedHeads(octokit, repo, prs.slice(0, -1));
+  const moved = await findMovedHeads(octokit, repo, prs);
   if (moved.length) {
     return `${moved.map((n) => `#${n}`).join(", ")} got new commits after the checks ran.`;
   }

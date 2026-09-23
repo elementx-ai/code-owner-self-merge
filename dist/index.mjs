@@ -37932,9 +37932,10 @@ const findMovedHeads = async (octokit, repo, prs) => {
         .filter((pr, i) => pr.head.sha !== prs[i].head.sha)
         .map((pr) => pr.number);
 };
-// The async merge API pins only the target PR's head SHA, but a stack merge
-// also lands the PRs below it. Just before merging, returns why the range is
-// no longer what was authorised in `prs` (target last), if it isn't.
+// Files are listed after `prs` is fetched, and the async merge API pins only
+// the target's head SHA while a stack merge also lands the PRs below it. Just
+// before merging, returns why the range is no longer what was authorised in
+// `prs` (target last), if it isn't.
 const findChangesSinceChecks = async (octokit, repo, prs) => {
     const target = prs[prs.length - 1];
     const { data: latest } = await octokit.rest.pulls.get({
@@ -37947,7 +37948,7 @@ const findChangesSinceChecks = async (octokit, repo, prs) => {
     if (!unchanged) {
         return "the stack changed after the checks ran.";
     }
-    const moved = await findMovedHeads(octokit, repo, prs.slice(0, -1));
+    const moved = await findMovedHeads(octokit, repo, prs);
     if (moved.length) {
         return `${moved.map((n) => `#${n}`).join(", ")} got new commits after the checks ran.`;
     }
@@ -38172,7 +38173,9 @@ class Actor {
                     throw new Error("The async merge API, which stacked PRs require, isn't available.");
                 }
                 // Older GitHub Enterprise Server without the async merge API
-                await octokit.rest.pulls.merge(mergeOptions);
+                const { data } = await octokit.rest.pulls.merge(mergeOptions);
+                if (!data.merged)
+                    throw new Error(data.message);
                 result = { status: "merged", details: {} };
             }
             await this.reportMergeResult(result, range);
