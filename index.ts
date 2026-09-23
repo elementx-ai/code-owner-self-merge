@@ -7,7 +7,7 @@ import { join } from "path";
 
 import {
   errorMessage,
-  findMovedHeads,
+  findChangesSinceChecks,
   getMergeBlockerInRange,
   getMergeRange,
   getPullRequests,
@@ -322,11 +322,10 @@ class Actor {
       return;
     }
 
-    // This PR is pinned by `sha` below; the ones under it in a stack aren't
-    const moved = await findMovedHeads(octokit, thisRepo, prs.slice(0, -1));
-    if (moved.length) {
+    const drift = await findChangesSinceChecks(octokit, thisRepo, prs);
+    if (drift) {
       await this.postComment(
-        `Sorry @${sender}, ${formatPRList(moved)} got new commits after the checks ran. Comment "LGTM" again to merge the latest changes.`,
+        `Sorry @${sender}, ${drift} Comment "LGTM" again to merge it as it is now.`,
       );
       return;
     }

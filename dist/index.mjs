@@ -37873,6 +37873,9 @@ const errorMessage = (error) => {
 // Returns a reason the PR can't be merged yet, or undefined if it can.
 // `which` names the PR in the message ("this PR" or "#12").
 const getMergeBlocker = async (octokit, repo, pr, which) => {
+    if (pr.state !== "open") {
+        return `${which} is closed.`;
+    }
     if (pr.draft) {
         return `${which} is a draft.`;
     }
@@ -37927,6 +37930,25 @@ const findMovedHeads = async (octokit, repo, prs) => {
     return current
         .filter((pr, i) => pr.head.sha !== prs[i].head.sha)
         .map((pr) => pr.number);
+};
+// The async merge API pins only the target PR's head SHA, but a stack merge
+// also lands the PRs below it. Just before merging, returns why the range is
+// no longer what was authorised in `prs` (target last), if it isn't.
+const findChangesSinceChecks = async (octokit, repo, prs) => {
+    const target = prs[prs.length - 1];
+    const { data: latest } = await octokit.rest.pulls.get({
+        ...repo,
+        pull_number: target.number,
+    });
+    const latestRange = await getMergeRange(octokit, repo, latest);
+    if (latestRange.join() !== prs.map((pr) => pr.number).join()) {
+        return "the stack changed after the checks ran.";
+    }
+    const moved = await findMovedHeads(octokit, repo, prs.slice(0, -1));
+    if (moved.length) {
+        return `${moved.map((n) => `#${n}`).join(", ")} got new commits after the checks ran.`;
+    }
+    return undefined;
 };
 
 const githubServerUrl = process.env["GITHUB_SERVER_URL"] || "https://github.com";
@@ -38124,10 +38146,9 @@ class Actor {
             await this.postComment(`Sorry @${sender}, ${blocker}`);
             return;
         }
-        // This PR is pinned by `sha` below; the ones under it in a stack aren't
-        const moved = await findMovedHeads(octokit, thisRepo, prs.slice(0, -1));
-        if (moved.length) {
-            await this.postComment(`Sorry @${sender}, ${formatPRList(moved)} got new commits after the checks ran. Comment "LGTM" again to merge the latest changes.`);
+        const drift = await findChangesSinceChecks(octokit, thisRepo, prs);
+        if (drift) {
+            await this.postComment(`Sorry @${sender}, ${drift} Comment "LGTM" again to merge it as it is now.`);
             return;
         }
         info("Creating comments and merging");

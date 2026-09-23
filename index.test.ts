@@ -1,6 +1,7 @@
 import { describe, expect, jest, test } from "@jest/globals";
 
 import {
+  findChangesSinceChecks,
   findMovedHeads,
   getMergeRange,
   mergePullRequestAsync,
@@ -563,5 +564,52 @@ describe("findMovedHeads", () => {
     expect(
       await findMovedHeads(octokit as any, repo, [pr(10, "a"), pr(11, "b")]),
     ).toEqual([11]);
+  });
+});
+
+describe("findChangesSinceChecks", () => {
+  const repo = { owner: "elementx-ai", repo: "app" };
+  const stack = { number: 9, size: 2, position: 2 };
+  const pr = (number: number, sha: string) =>
+    ({ number, head: { sha }, stack }) as any;
+  const member = (number: number) => ({
+    number,
+    state: "open",
+    draft: false,
+    merged_at: null,
+  });
+  const makeOctokit = (heads: Record<number, string>, members: number[]) => ({
+    request: jest.fn(async (..._args: unknown[]) => ({
+      data: { pull_requests: members.map(member) },
+    })),
+    rest: {
+      pulls: {
+        get: jest.fn(async ({ pull_number }: { pull_number: number }) => ({
+          data: pr(pull_number, heads[pull_number]!),
+        })),
+      },
+    },
+  });
+  const authorised = [pr(10, "a"), pr(11, "b")];
+
+  test("returns nothing when the stack and its heads are unchanged", async () => {
+    const octokit = makeOctokit({ 10: "a", 11: "b" }, [10, 11]);
+    expect(
+      await findChangesSinceChecks(octokit as any, repo, authorised),
+    ).toBeUndefined();
+  });
+
+  test("reports a PR added below the target", async () => {
+    const octokit = makeOctokit({ 10: "a", 11: "b" }, [10, 12, 11]);
+    expect(
+      await findChangesSinceChecks(octokit as any, repo, authorised),
+    ).toMatch(/stack changed/);
+  });
+
+  test("reports a lower PR that got new commits", async () => {
+    const octokit = makeOctokit({ 10: "a2", 11: "b" }, [10, 11]);
+    expect(
+      await findChangesSinceChecks(octokit as any, repo, authorised),
+    ).toMatch(/#10 got new commits/);
   });
 });
