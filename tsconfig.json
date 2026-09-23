@@ -11,6 +11,6 @@
     "resolveJsonModule": true,
     "types": ["node", "jest"]
   },
-  "include": ["index.ts", "index.test.ts"],
+  "include": ["index.ts", "merge.ts", "index.test.ts"],
   "exclude": ["dist/**"]
 }

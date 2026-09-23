@@ -5,6 +5,17 @@ import Codeowners from "codeowners";
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 
+import {
+  errorMessage,
+  findChangesSinceChecks,
+  getMergeBlockerInRange,
+  getMergeRange,
+  getPullRequests,
+  type AsyncMergeResult,
+  type MergeMethod,
+  mergePullRequestAsync,
+} from "./merge.js";
+
 type Octokit = ReturnType<typeof getOctokit>;
 type PullsGetResponse = Awaited<ReturnType<Octokit["rest"]["pulls"]["get"]>>;
 type PullsListFilesResponseData = Awaited<
@@ -77,7 +88,14 @@ const commentOnMergablePRs = async (): Promise<void> => {
     throw new Error("Missing pull_request payload");
   }
 
-  const changedFiles = await getPRChangedFiles(octokit, thisRepo, pr.number);
+  // A stacked PR's LGTM also merges the PRs below it, so owners need to own
+  // those files too for the announcement below to hold.
+  const range = await getMergeRange(
+    octokit,
+    thisRepo,
+    pr as { number: number },
+  );
+  const changedFiles = await getRangeChangedFiles(octokit, thisRepo, range);
   core.info(`Changed files: \n - ${changedFiles.join("\n - ")}`);
 
   const codeowners = findCodeOwnersForChangedFiles(changedFiles, cwd);
@@ -155,7 +173,7 @@ const commentOnMergablePRs = async (): Promise<void> => {
   const owners = formatList(formattedOwnersWhoHaveAccessToAllFilesInPR);
   const message = `Thanks for the PR!
 
-This section of the codebase is owned by ${owners} - if they write a comment saying "LGTM" then it will be merged.
+This section of the codebase is owned by ${owners} - if they write a comment saying "LGTM" then it will be merged.${range.length > 1 ? ` This PR is stacked, so that also merges ${formatPRList(range.slice(0, -1))} below it.` : ""}
 ${ourSignature}`;
 
   const skipOutput = core.getInput("quiet");
@@ -224,18 +242,41 @@ class Actor {
     this.sender = sender;
   }
 
-  async getTargetPRIfHasAccess(): Promise<PullsGetResponse | undefined> {
+  postComment(body: string): Promise<unknown> {
+    return this.octokit.rest.issues.createComment({
+      ...this.thisRepo,
+      issue_number: this.issue.number,
+      body,
+    });
+  }
+
+  // Returns the PRs a merge of this one would land (see getMergeRange), but
+  // only if the sender owns every file changed across all of them.
+  async getMergeRangeIfHasAccess(): Promise<
+    { prInfo: PullsGetResponse; prs: PullsGetResponse["data"][] } | undefined
+  > {
     const { octokit, thisRepo, sender, issue, cwd } = this;
     const org = thisRepo.owner;
     core.info(
       `\n\nLooking at the ${context.eventName} from ${sender} in '${issue.title ?? ""}' to see if we can proceed`,
     );
 
-    const changedFiles = await getPRChangedFiles(
-      octokit,
-      thisRepo,
-      issue.number,
-    );
+    const prInfo = await octokit.rest.pulls.get({
+      ...thisRepo,
+      pull_number: issue.number,
+    });
+    if (prInfo.data.state.toLowerCase() !== "open") {
+      await this.postComment(`Sorry @${sender}, this PR isn't open.`);
+      return;
+    }
+
+    const range = await getMergeRange(octokit, thisRepo, prInfo.data);
+    if (range.length > 1) {
+      core.info(`Stacked PR: merging this also merges ${formatPRList(range)}`);
+    }
+
+    const prs = await getPullRequests(octokit, thisRepo, prInfo.data, range);
+    const changedFiles = await getRangeChangedFiles(octokit, thisRepo, range);
     core.info(`Changed files: \n - ${changedFiles.join("\n - ")}`);
 
     const filesWhichArentOwned = getFilesNotOwnedByEffectiveOwner(
@@ -248,122 +289,119 @@ class Actor {
         `@${sender} does not have access to \n - ${filesWhichArentOwned.join("\n - ")}\n`,
       );
       listFilesWithOwners(changedFiles, cwd);
-      await octokit.rest.issues.createComment({
-        ...thisRepo,
-        issue_number: issue.number,
-        body: `Sorry @${sender}, you don't have access to these files:\n\n${pathListToMarkdown(filesWhichArentOwned)}.`,
-      });
+      const stackNote =
+        range.length > 1
+          ? `\n\nThis PR is stacked, so merging it would also merge ${formatPRList(range.slice(0, -1))} below it.`
+          : "";
+      await this.postComment(
+        `Sorry @${sender}, you don't have access to these files:\n\n${pathListToMarkdown(filesWhichArentOwned)}.${stackNote}`,
+      );
       return;
     }
 
-    const prInfo = await octokit.rest.pulls.get({
-      ...thisRepo,
-      pull_number: issue.number,
-    });
-    if (prInfo.data.state.toLowerCase() !== "open") {
-      await octokit.rest.issues.createComment({
-        ...thisRepo,
-        issue_number: issue.number,
-        body: `Sorry @${sender}, this PR isn't open.`,
-      });
-      return;
-    }
-    return prInfo;
+    return { prInfo, prs };
   }
 
   async mergeIfHasAccess(): Promise<void> {
-    const prInfo = await this.getTargetPRIfHasAccess();
-    if (!prInfo) {
+    const access = await this.getMergeRangeIfHasAccess();
+    if (!access) {
       return;
     }
-
+    const { prInfo, prs } = access;
+    const range = prs.map((pr) => pr.number);
     const { octokit, thisRepo, issue, sender } = this;
 
-    // Don't try merge if mergability is not yet known
-    if (prInfo.data.mergeable === null) {
-      await octokit.rest.issues.createComment({
-        ...thisRepo,
-        issue_number: issue.number,
-        body: `Sorry @${sender}, this PR is still running background checks to compute mergeability. They'll need to complete before this can be merged.`,
-      });
+    const blocker = await getMergeBlockerInRange(
+      octokit,
+      thisRepo,
+      prs,
+      issue.number,
+    );
+    if (blocker) {
+      await this.postComment(`Sorry @${sender}, ${blocker}`);
       return;
     }
 
-    // Don't try merge unmergable stuff
-    if (!prInfo.data.mergeable) {
-      await octokit.rest.issues.createComment({
-        ...thisRepo,
-        issue_number: issue.number,
-        body: `Sorry @${sender}, this PR has merge conflicts. They'll need to be fixed before this can be merged.`,
-      });
-      return;
-    }
-
-    // Don't merge red PRs or PRs with pending statuses
-    const statusInfo = await octokit.rest.repos.listCommitStatusesForRef({
-      ...thisRepo,
-      ref: prInfo.data.head.sha,
-    });
-    const latestStatuses = statusInfo.data.filter(
-      (thing, index, self) =>
-        index ===
-        self.findIndex((item) => item.target_url === thing.target_url),
-    );
-
-    const pendingStatus = latestStatuses.find(
-      (status) => status.state === "pending",
-    );
-    if (pendingStatus) {
-      await octokit.rest.issues.createComment({
-        ...thisRepo,
-        issue_number: issue.number,
-        body: `Sorry @${sender}, this PR has pending status checks that haven't completed yet. Blocked by [${pendingStatus.context}](${pendingStatus.target_url}): '${pendingStatus.description}'.`,
-      });
-      return;
-    }
-
-    const failedStatus = latestStatuses.find(
-      (status) => status.state !== "success",
-    );
-    if (failedStatus) {
-      await octokit.rest.issues.createComment({
-        ...thisRepo,
-        issue_number: issue.number,
-        body: `Sorry @${sender}, this PR could not be merged because it wasn't green. Blocked by [${failedStatus.context}](${failedStatus.target_url}): '${failedStatus.description}'.`,
-      });
+    const drift = await findChangesSinceChecks(octokit, thisRepo, prs);
+    if (drift) {
+      await this.postComment(
+        `Sorry @${sender}, ${drift} Comment "LGTM" again to merge it as it is now.`,
+      );
       return;
     }
 
     core.info("Creating comments and merging");
     try {
       const coauthor = `Co-authored-by: ${sender} <${sender}@users.noreply.github.com>`;
-      const mergeMethodInput = core.getInput("merge_method") as
-        | "merge"
-        | "squash"
-        | "rebase"
-        | "";
-      await octokit.rest.pulls.merge({
+      const mergeMethod =
+        (core.getInput("merge_method") as MergeMethod | "") || "merge";
+      const mergeOptions = {
         ...thisRepo,
         pull_number: issue.number,
-        merge_method: mergeMethodInput || "merge",
+        merge_method: mergeMethod,
         commit_message: coauthor,
-      });
-      await octokit.rest.issues.createComment({
-        ...thisRepo,
-        issue_number: issue.number,
-        body: `Merging because @${sender} is a code-owner of all the changes - thanks!`,
-      });
+        // Refuse to merge if someone pushed after the checks above ran
+        sha: prInfo.data.head.sha,
+      };
+
+      let result = await mergePullRequestAsync(octokit, mergeOptions);
+      if (!result) {
+        if (range.length > 1) {
+          throw new Error(
+            "The async merge API, which stacked PRs require, isn't available.",
+          );
+        }
+        // Older GitHub Enterprise Server without the async merge API
+        const { data } = await octokit.rest.pulls.merge(mergeOptions);
+        if (!data.merged) throw new Error(data.message);
+        result = { status: "merged", details: {} };
+      }
+      await this.reportMergeResult(result, range);
     } catch (error) {
       core.info("Merging (or commenting) failed:");
       core.error(error as Error);
       core.setFailed("Failed to merge");
 
       const linkToCI = `${githubServerUrl}/${thisRepo.owner}/${thisRepo.repo}/actions/runs/${process.env.GITHUB_RUN_ID}?check_suite_focus=true`;
-      await octokit.rest.issues.createComment({
-        ...thisRepo,
-        issue_number: issue.number,
-        body: `There was an issue merging, maybe try again ${sender}. <a href="${linkToCI}">Details</a>`,
-      });
+      await this.postComment(
+        `There was an issue merging, maybe try again ${sender}: ${errorMessage(error)} <a href="${linkToCI}">Details</a>`,
+      );
+    }
+  }
+
+  async reportMergeResult(
+    result: AsyncMergeResult,
+    range: number[],
+  ): Promise<void> {
+    const { octokit, thisRepo, issue, sender } = this;
+    const because = `because @${sender} is a code-owner of all the changes`;
+    const isStack = range.length > 1;
+
+    switch (result.status) {
+      case "merged":
+        await this.postComment(
+          `Merging ${because} - thanks!${isStack ? ` This merged the stack: ${formatPRList(range)}.` : ""}`,
+        );
+        for (const number of range.slice(0, -1)) {
+          await octokit.rest.issues.createComment({
+            ...thisRepo,
+            issue_number: number,
+            body: `Merged as part of the stack via #${issue.number}, ${because}.`,
+          });
+        }
+        return;
+      case "enqueued":
+        await this.postComment(
+          `Added to the merge queue ${because} - thanks!${isStack ? ` The queue will merge ${formatPRList(range)} together.` : ""}`,
+        );
+        return;
+      case "pending":
+        await this.postComment(
+          `Merge requested ${because}. GitHub is still processing it in the background.`,
+        );
+        return;
+      case "failed":
+        throw new Error(result.details.message || "GitHub rejected the merge");
     }
   }
 
@@ -580,6 +618,21 @@ export const findCodeOwnersForChangedFiles = (
     users: Array.from(owners),
     labels: Array.from(labels),
   };
+};
+
+const formatPRList = (numbers: number[]): string =>
+  formatList(numbers.map((number) => `#${number}`));
+
+// Every file changed across the PRs a merge would land (see getMergeRange).
+const getRangeChangedFiles = async (
+  octokit: Octokit,
+  repoDeets: RepoDetails,
+  range: number[],
+): Promise<string[]> => {
+  const files = await Promise.all(
+    range.map((n) => getPRChangedFiles(octokit, repoDeets, n)),
+  );
+  return [...new Set(files.flat())];
 };
 
 const getPRChangedFiles = async (

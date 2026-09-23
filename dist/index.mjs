@@ -2533,7 +2533,13 @@ function requireRequest$1 () {
 	      } else if (typeof val[i] === 'object') {
 	        throw new InvalidArgumentError(`invalid ${key} header`)
 	      } else {
-	        arr.push(`${val[i]}`);
+	        // Coerce primitives (and reject unsafe coercions such as functions
+	        // with a crafted toString/Symbol.toPrimitive).
+	        const str = `${val[i]}`;
+	        if (!isValidHeaderValue(str)) {
+	          throw new InvalidArgumentError(`invalid ${key} header`)
+	        }
+	        arr.push(str);
 	      }
 	    }
 	    val = arr;
@@ -2544,7 +2550,12 @@ function requireRequest$1 () {
 	  } else if (val === null) {
 	    val = '';
 	  } else {
+	    // Coerce primitives (and reject unsafe coercions such as functions
+	    // with a crafted toString/Symbol.toPrimitive).
 	    val = `${val}`;
+	    if (!isValidHeaderValue(val)) {
+	      throw new InvalidArgumentError(`invalid ${key} header`)
+	    }
 	  }
 
 	  if (headerName === 'host') {
@@ -2695,6 +2706,7 @@ function requireDispatcherBase () {
 
 	  get webSocketOptions () {
 	    return {
+	      maxFragments: this[kWebSocketOptions].maxFragments ?? 131072,
 	      maxPayloadSize: this[kWebSocketOptions].maxPayloadSize ?? 128 * 1024 * 1024
 	    }
 	  }
@@ -8599,6 +8611,7 @@ function requireClientH1 () {
 	  RequestContentLengthMismatchError,
 	  ResponseContentLengthMismatchError,
 	  RequestAbortedError,
+	  InvalidArgumentError,
 	  HeadersTimeoutError,
 	  HeadersOverflowError,
 	  SocketError,
@@ -8646,6 +8659,9 @@ function requireClientH1 () {
 	const FastBuffer = Buffer[Symbol.species];
 	const addListener = util.addListener;
 	const removeAllListeners = util.removeAllListeners;
+	const kIdleSocketValidation = Symbol('kIdleSocketValidation');
+	const kIdleSocketValidationTimeout = Symbol('kIdleSocketValidationTimeout');
+	const kSocketUsed = Symbol('kSocketUsed');
 
 	let extractBody;
 
@@ -8868,27 +8884,69 @@ function requireClientH1 () {
 
 	      const offset = llhttp.llhttp_get_error_pos(this.ptr) - currentBufferPtr;
 
-	      if (ret === constants.ERROR.PAUSED_UPGRADE) {
-	        this.onUpgrade(data.slice(offset));
-	      } else if (ret === constants.ERROR.PAUSED) {
-	        this.paused = true;
-	        socket.unshift(data.slice(offset));
-	      } else if (ret !== constants.ERROR.OK) {
-	        const ptr = llhttp.llhttp_get_error_reason(this.ptr);
-	        let message = '';
-	        /* istanbul ignore else: difficult to make a test case for */
-	        if (ptr) {
-	          const len = new Uint8Array(llhttp.memory.buffer, ptr).indexOf(0);
-	          message =
-	            'Response does not match the HTTP/1.1 protocol (' +
-	            Buffer.from(llhttp.memory.buffer, ptr, len).toString() +
-	            ')';
+	      if (ret !== constants.ERROR.OK) {
+	        const body = data.subarray(offset);
+
+	        if (ret === constants.ERROR.PAUSED_UPGRADE) {
+	          this.onUpgrade(body);
+	        } else if (ret === constants.ERROR.PAUSED) {
+	          this.paused = true;
+	          socket.unshift(body);
+	        } else {
+	          throw this.createError(ret, body)
 	        }
-	        throw new HTTPParserError(message, constants.ERROR[ret], data.slice(offset))
 	      }
 	    } catch (err) {
 	      util.destroy(socket, err);
 	    }
+	  }
+
+	  finish () {
+	    assert(currentParser === null);
+	    assert(this.ptr != null);
+	    assert(!this.paused);
+
+	    const { llhttp } = this;
+
+	    let ret;
+
+	    try {
+	      currentParser = this;
+	      ret = llhttp.llhttp_finish(this.ptr);
+	    } finally {
+	      currentParser = null;
+	    }
+
+	    if (ret === constants.ERROR.OK) {
+	      return null
+	    }
+
+	    if (ret === constants.ERROR.PAUSED || ret === constants.ERROR.PAUSED_UPGRADE) {
+	      this.paused = true;
+	      return null
+	    }
+
+	    return this.createError(ret, EMPTY_BUF)
+	  }
+
+	  createError (ret, data) {
+	    const { llhttp, contentLength, bytesRead } = this;
+
+	    if (contentLength && bytesRead !== parseInt(contentLength, 10)) {
+	      return new ResponseContentLengthMismatchError()
+	    }
+
+	    const ptr = llhttp.llhttp_get_error_reason(this.ptr);
+	    let message = '';
+	    if (ptr) {
+	      const len = new Uint8Array(llhttp.memory.buffer, ptr).indexOf(0);
+	      message =
+	        'Response does not match the HTTP/1.1 protocol (' +
+	        Buffer.from(llhttp.memory.buffer, ptr, len).toString() +
+	        ')';
+	    }
+
+	    return new HTTPParserError(message, constants.ERROR[ret], data)
 	  }
 
 	  destroy () {
@@ -8915,6 +8973,11 @@ function requireClientH1 () {
 
 	    /* istanbul ignore next: difficult to make a test case for */
 	    if (socket.destroyed) {
+	      return -1
+	    }
+
+	    if (client[kRunning] === 0) {
+	      util.destroy(socket, new SocketError('bad response', util.getSocketInfo(socket)));
 	      return -1
 	    }
 
@@ -9018,6 +9081,11 @@ function requireClientH1 () {
 
 	    /* istanbul ignore next: difficult to make a test case for */
 	    if (socket.destroyed) {
+	      return -1
+	    }
+
+	    if (client[kRunning] === 0) {
+	      util.destroy(socket, new SocketError('bad response', util.getSocketInfo(socket)));
 	      return -1
 	    }
 
@@ -9194,6 +9262,7 @@ function requireClientH1 () {
 	    request.onComplete(headers);
 
 	    client[kQueue][client[kRunningIdx]++] = null;
+	    socket[kSocketUsed] = true;
 
 	    if (socket[kWriting]) {
 	      assert(client[kRunning] === 0);
@@ -9252,6 +9321,9 @@ function requireClientH1 () {
 	  socket[kWriting] = false;
 	  socket[kReset] = false;
 	  socket[kBlocking] = false;
+	  socket[kIdleSocketValidation] = 0;
+	  socket[kIdleSocketValidationTimeout] = null;
+	  socket[kSocketUsed] = false;
 	  socket[kParser] = new Parser(client, socket, llhttpInstance);
 
 	  addListener(socket, 'error', function (err) {
@@ -9262,8 +9334,11 @@ function requireClientH1 () {
 	    // On Mac OS, we get an ECONNRESET even if there is a full body to be forwarded
 	    // to the user.
 	    if (err.code === 'ECONNRESET' && parser.statusCode && !parser.shouldKeepAlive) {
-	      // We treat all incoming data so for as a valid response.
-	      parser.onMessageComplete();
+	      const parserErr = parser.finish();
+	      if (parserErr) {
+	        this[kError] = parserErr;
+	        this[kClient][kOnError](parserErr);
+	      }
 	      return
 	    }
 
@@ -9282,8 +9357,10 @@ function requireClientH1 () {
 	    const parser = this[kParser];
 
 	    if (parser.statusCode && !parser.shouldKeepAlive) {
-	      // We treat all incoming data so far as a valid response.
-	      parser.onMessageComplete();
+	      const parserErr = parser.finish();
+	      if (parserErr) {
+	        util.destroy(this, parserErr);
+	      }
 	      return
 	    }
 
@@ -9293,10 +9370,11 @@ function requireClientH1 () {
 	    const client = this[kClient];
 	    const parser = this[kParser];
 
+	    clearIdleSocketValidation(this);
+
 	    if (parser) {
 	      if (!this[kError] && parser.statusCode && !parser.shouldKeepAlive) {
-	        // We treat all incoming data so far as a valid response.
-	        parser.onMessageComplete();
+	        this[kError] = parser.finish() || this[kError];
 	      }
 
 	      this[kParser].destroy();
@@ -9359,7 +9437,7 @@ function requireClientH1 () {
 	      return socket.destroyed
 	    },
 	    busy (request) {
-	      if (socket[kWriting] || socket[kReset] || socket[kBlocking]) {
+	      if (socket[kWriting] || socket[kReset] || socket[kBlocking] || socket[kIdleSocketValidation] === 1) {
 	        return true
 	      }
 
@@ -9397,6 +9475,39 @@ function requireClientH1 () {
 	  }
 	}
 
+	function clearIdleSocketValidation (socket) {
+	  if (socket[kIdleSocketValidationTimeout]) {
+	    clearImmediate(socket[kIdleSocketValidationTimeout]);
+	    socket[kIdleSocketValidationTimeout] = null;
+	  }
+
+	  socket[kIdleSocketValidation] = 0;
+	}
+
+	function scheduleIdleSocketValidation (client, socket) {
+	  socket[kIdleSocketValidation] = 1;
+	  // Yield to the check phase (after poll) so unsolicited bytes / FIN / RST
+	  // already pending on this idle keep-alive socket are processed before the
+	  // next request is written (GHSA-35p6-xmwp-9g52).
+	  //
+	  // setTimeout(0) pays Node's ~1ms timer floor on every sequential reuse
+	  // (#5493). setImmediate avoids that, but an *unref'd* Immediate lets poll
+	  // block for ~500ms when the event loop is otherwise idle (#5600 / #5606).
+	  // A ref'd Immediate both keeps the pending request alive and makes poll
+	  // return immediately — the hybrid those issues asked for.
+	  socket[kIdleSocketValidationTimeout] = setImmediate(() => {
+	    socket[kIdleSocketValidationTimeout] = null;
+	    socket[kIdleSocketValidation] = 2;
+
+	    if (client[kSocket] === socket && !socket.destroyed) {
+	      client[kResume]();
+	    }
+	  });
+	}
+
+	/**
+	 * @param {import('./client.js')} client
+	 */
 	function resumeH1 (client) {
 	  const socket = client[kSocket];
 
@@ -9409,6 +9520,32 @@ function requireClientH1 () {
 	    } else if (socket[kNoRef] && socket.ref) {
 	      socket.ref();
 	      socket[kNoRef] = false;
+	    }
+
+	    if (client[kRunning] === 0 && client[kPending] > 0 && socket[kSocketUsed]) {
+	      if (socket[kIdleSocketValidation] === 0) {
+	        scheduleIdleSocketValidation(client, socket);
+	        socket[kParser].readMore();
+	        if (socket.destroyed) {
+	          return
+	        }
+	        return
+	      }
+
+	      if (socket[kIdleSocketValidation] === 1) {
+	        socket[kParser].readMore();
+	        if (socket.destroyed) {
+	          return
+	        }
+	        return
+	      }
+	    }
+
+	    if (client[kRunning] === 0) {
+	      socket[kParser].readMore();
+	      if (socket.destroyed) {
+	        return
+	      }
 	    }
 
 	    if (client[kSize] === 0) {
@@ -9466,8 +9603,16 @@ function requireClientH1 () {
 	    }
 	    body = bodyStream.stream;
 	    contentLength = bodyStream.length;
-	  } else if (util.isBlobLike(body) && request.contentType == null && body.type) {
-	    headers.push('content-type', body.type);
+	  } else if (util.isBlobLike(body) && request.contentType == null) {
+	    const contentType = body.type;
+	    if (contentType) {
+	      const contentTypeValue = `${contentType}`;
+	      if (!util.isValidHeaderValue(contentTypeValue)) {
+	        util.errorRequest(client, request, new InvalidArgumentError('invalid content-type header'));
+	        return false
+	      }
+	      headers.push('content-type', contentTypeValue);
+	    }
 	  }
 
 	  if (body && typeof body.read === 'function') {
@@ -9504,6 +9649,7 @@ function requireClientH1 () {
 	  }
 
 	  const socket = client[kSocket];
+	  clearIdleSocketValidation(socket);
 
 	  const abort = (err) => {
 	    if (request.aborted || request.completed) {
@@ -12323,7 +12469,6 @@ function requireAgent () {
 
 	class Agent extends DispatcherBase {
 	  constructor ({ factory = defaultFactory, maxRedirections = 0, connect, ...options } = {}) {
-
 	    if (typeof factory !== 'function') {
 	      throw new InvalidArgumentError('factory must be a function.')
 	    }
@@ -12902,6 +13047,28 @@ function requireRetryHandler () {
 	  return new Date(retryAfter).getTime() - current
 	}
 
+	function validatePartialResponseContentLength (headers, range, statusCode, retryCount) {
+	  const contentLength = headers['content-length'];
+	  if (contentLength == null) {
+	    return null
+	  }
+
+	  if (!Number.isFinite(range.start) || !Number.isFinite(range.end)) {
+	    return null
+	  }
+
+	  const length = Number(contentLength);
+	  const expectedLength = range.end - range.start + 1;
+	  if (!Number.isFinite(length) || length !== expectedLength) {
+	    return new RequestRetryError('Content-Length mismatch', statusCode, {
+	      headers,
+	      data: { count: retryCount }
+	    })
+	  }
+
+	  return null
+	}
+
 	class RetryHandler {
 	  constructor (opts, handlers) {
 	    const { retryOptions, ...dispatchOpts } = opts;
@@ -12955,6 +13122,7 @@ function requireRetryHandler () {
 	    this.end = null;
 	    this.etag = null;
 	    this.resume = null;
+	    this.headersSent = false;
 
 	    // Handle possible onConnect duplication
 	    this.handler.onConnect(reason => {
@@ -12965,6 +13133,20 @@ function requireRetryHandler () {
 	        this.reason = reason;
 	      }
 	    });
+	  }
+
+	  checkpointResponseEnd (headers, resume) {
+	    if (this.end == null && this.opts.method !== 'HEAD') {
+	      const contentLength = headers['content-length'];
+	      this.end = contentLength != null ? Number(contentLength) - 1 : null;
+
+	      assert(
+	        this.end == null || Number.isFinite(this.end),
+	        'invalid content-length'
+	      );
+	    }
+
+	    this.resume = this.end != null ? resume : null;
 	  }
 
 	  onRequestSent () {
@@ -13056,6 +13238,8 @@ function requireRetryHandler () {
 
 	    if (statusCode >= 300) {
 	      if (this.retryOpts.statusCodes.includes(statusCode) === false) {
+	        this.headersSent = true;
+	        this.checkpointResponseEnd(headers, resume);
 	        return this.handler.onHeaders(
 	          statusCode,
 	          rawHeaders,
@@ -13116,10 +13300,23 @@ function requireRetryHandler () {
 	        return false
 	      }
 
+	      const contentLengthError = validatePartialResponseContentLength(headers, contentRange, statusCode, this.retryCount);
+	      if (contentLengthError != null) {
+	        this.abort(contentLengthError);
+	        return false
+	      }
+
 	      const { start, size, end = size - 1 } = contentRange;
 
-	      assert(this.start === start, 'content-range mismatch');
-	      assert(this.end == null || this.end === end, 'content-range mismatch');
+	      if (this.start !== start || (this.end != null && this.end !== end)) {
+	        this.abort(
+	          new RequestRetryError('Content-Range mismatch', statusCode, {
+	            headers,
+	            data: { count: this.retryCount }
+	          })
+	        );
+	        return false
+	      }
 
 	      this.resume = resume;
 	      return true
@@ -13131,12 +13328,19 @@ function requireRetryHandler () {
 	        const range = parseRangeHeader(headers['content-range']);
 
 	        if (range == null) {
+	          this.headersSent = true;
 	          return this.handler.onHeaders(
 	            statusCode,
 	            rawHeaders,
 	            resume,
 	            statusMessage
 	          )
+	        }
+
+	        const contentLengthError = validatePartialResponseContentLength(headers, range, statusCode, this.retryCount);
+	        if (contentLengthError != null) {
+	          this.abort(contentLengthError);
+	          return false
 	        }
 
 	        const { start, size, end = size - 1 } = range;
@@ -13163,6 +13367,7 @@ function requireRetryHandler () {
 	      );
 
 	      this.resume = resume;
+	      this.headersSent = true;
 	      this.etag = headers.etag != null ? headers.etag : null;
 
 	      // Weak etags are not useful for comparison nor cache
@@ -13202,7 +13407,7 @@ function requireRetryHandler () {
 	  }
 
 	  onError (err) {
-	    if (this.aborted || isDisturbed(this.opts.body)) {
+	    if (this.aborted || isDisturbed(this.opts.body) || (this.headersSent && this.resume == null)) {
 	      return this.handler.onError(err)
 	    }
 
@@ -23527,7 +23732,7 @@ function requireUtil$2 () {
 
 	    if (
 	      code < 0x20 || // exclude CTLs (0-31)
-	      code === 0x7F || // DEL
+	      code > 0x7E || // exclude DEL and non-ascii
 	      code === 0x3B // ;
 	    ) {
 	      throw new Error('Invalid cookie path')
@@ -23536,16 +23741,80 @@ function requireUtil$2 () {
 	}
 
 	/**
-	 * I have no idea why these values aren't allowed to be honest,
-	 * but Deno tests these. - Khafra
+	 * <let-dig> ::= <letter> | <digit>
+	 *
+	 * <letter> ::= any one of the 52 alphabetic characters A through Z in
+	 * upper case and a through z in lower case
+	 *
+	 * <digit> ::= any one of the ten digits 0 through 9r
+	 *
+	 * @see https://www.rfc-editor.org/rfc/rfc1034#section-3.5
+	 * @param {number} code
+	 */
+	function isLetterOrDigit (code) {
+	  return (
+	    (code >= 0x30 && code <= 0x39) || // 0-9
+	    (code >= 0x41 && code <= 0x5A) || // A-Z
+	    (code >= 0x61 && code <= 0x7A) // a-z
+	  )
+	}
+
+	/**
+	 * Validates a cookie domain against the "preferred name syntax".
+	 *
+	 * <domain>      ::= <subdomain> | " "
+	 * <subdomain>   ::= <label> | <subdomain> "." <label>
+	 * <label>       ::= <let-dig> [ [ <ldh-str> ] <let-dig> ]
+	 * <ldh-str>     ::= <let-dig-hyp> | <let-dig-hyp> <ldh-str>
+	 * <let-dig-hyp> ::= <let-dig> | "-"
+	 *
+	 * @see https://www.rfc-editor.org/rfc/rfc1034#section-3.5
+	 * @see https://www.rfc-editor.org/rfc/rfc1123#section-2.1
+	 * @see https://www.rfc-editor.org/rfc/rfc1035#section-2.3.4
 	 * @param {string} domain
 	 */
 	function validateCookieDomain (domain) {
-	  if (
-	    domain.startsWith('-') ||
-	    domain.endsWith('.') ||
-	    domain.endsWith('-')
-	  ) {
+	  // <domain> ::= <subdomain> | " "
+	  if (domain === ' ') {
+	    return
+	  }
+
+	  if (domain.length > 255) {
+	    throw new Error('Invalid cookie domain')
+	  }
+
+	  let labelLength = 0;
+
+	  for (let i = 0; i < domain.length; ++i) {
+	    const code = domain.charCodeAt(i);
+
+	    if (code === 0x2E) {
+	      if (labelLength === 0) {
+	        throw new Error('Invalid cookie domain')
+	      }
+
+	      if (domain.charCodeAt(i - 1) === 0x2D) { // "-"
+	        throw new Error('Invalid cookie domain')
+	      }
+
+	      labelLength = 0;
+	      continue
+	    }
+
+	    if (labelLength === 0 && !isLetterOrDigit(code)) {
+	      throw new Error('Invalid cookie domain')
+	    }
+
+	    if (!isLetterOrDigit(code) && code !== 0x2D) { // "-"
+	      throw new Error('Invalid cookie domain')
+	    }
+
+	    if (++labelLength > 63) {
+	      throw new Error('Invalid cookie domain')
+	    }
+	  }
+
+	  if (labelLength === 0 || domain.charCodeAt(domain.length - 1) === 0x2D) { // "-"
 	    throw new Error('Invalid cookie domain')
 	  }
 	}
@@ -23688,7 +23957,13 @@ function requireUtil$2 () {
 
 	    const [key, ...value] = part.split('=');
 
-	    out.push(`${key.trim()}=${value.join('=')}`);
+	    const trimmedKey = key.trim();
+	    const joinedValue = value.join('=');
+
+	    validateCookieName(trimmedKey);
+	    validateCookieValue(joinedValue);
+
+	    out.push(`${trimmedKey}=${joinedValue}`);
 	  }
 
 	  return out.join('; ')
@@ -23987,32 +24262,25 @@ function requireParse () {
 	    // If the attribute-name case-insensitively matches the string
 	    // "SameSite", the user agent MUST process the cookie-av as follows:
 
-	    // 1. Let enforcement be "Default".
-	    let enforcement = 'Default';
-
 	    const attributeValueLowercase = attributeValue.toLowerCase();
-	    // 2. If cookie-av's attribute-value is a case-insensitive match for
-	    //    "None", set enforcement to "None".
-	    if (attributeValueLowercase.includes('none')) {
-	      enforcement = 'None';
-	    }
 
-	    // 3. If cookie-av's attribute-value is a case-insensitive match for
-	    //    "Strict", set enforcement to "Strict".
-	    if (attributeValueLowercase.includes('strict')) {
-	      enforcement = 'Strict';
+	    // 1. If cookie-av's attribute-value is a case-insensitive match for
+	    //    "None", append an attribute to the cookie-attribute-list with an
+	    //    attribute-name of "SameSite" and an attribute-value of "None".
+	    if (attributeValueLowercase === 'none') {
+	      cookieAttributeList.sameSite = 'None';
+	    } else if (attributeValueLowercase === 'strict') {
+	      // 2. If cookie-av's attribute-value is a case-insensitive match for
+	      //    "Strict", append an attribute to the cookie-attribute-list with
+	      //    an attribute-name of "SameSite" and an attribute-value of
+	      //    "Strict".
+	      cookieAttributeList.sameSite = 'Strict';
+	    } else if (attributeValueLowercase === 'lax') {
+	      // 3. If cookie-av's attribute-value is a case-insensitive match for
+	      //    "Lax", append an attribute to the cookie-attribute-list with an
+	      //    attribute-name of "SameSite" and an attribute-value of "Lax".
+	      cookieAttributeList.sameSite = 'Lax';
 	    }
-
-	    // 4. If cookie-av's attribute-value is a case-insensitive match for
-	    //    "Lax", set enforcement to "Lax".
-	    if (attributeValueLowercase.includes('lax')) {
-	      enforcement = 'Lax';
-	    }
-
-	    // 5. Append an attribute to the cookie-attribute-list with an
-	    //    attribute-name of "SameSite" and an attribute-value of
-	    //    enforcement.
-	    cookieAttributeList.sameSite = enforcement;
 	  } else {
 	    cookieAttributeList.unparsed ??= [];
 
@@ -25286,7 +25554,7 @@ function requireConnection () {
 	        // is specified, the server needs to include the same field and one of
 	        // the selected subprotocol values in its response for the connection to
 	        // be established.
-	        if (!requestProtocols.includes(secProtocol)) {
+	        if (requestProtocols === null || !requestProtocols.includes(secProtocol)) {
 	          failWebsocketConnection(ws, 'Protocol was not set in the opening handshake.');
 	          return
 	        }
@@ -25533,7 +25801,12 @@ function requirePermessageDeflate () {
 
 	        if (this.#maxPayloadSize > 0 && this.#inflate[kLength] > this.#maxPayloadSize) {
 	          callback(new MessageSizeExceededError());
+	          // The inflater may still hold buffered input that can emit a late
+	          // zlib error. Remove the data listener, then deterministically stop
+	          // the stream so a subsequent 'error' cannot fire without a listener
+	          // (which would terminate the process as an unhandled error event).
 	          this.#inflate.removeAllListeners();
+	          this.#inflate.destroy();
 	          this.#inflate = null;
 	          return
 	        }
@@ -25598,6 +25871,11 @@ function requireReceiver () {
 	const { PerMessageDeflate } = requirePermessageDeflate();
 	const { MessageSizeExceededError } = requireErrors();
 
+	function failWebsocketConnectionWithCode (ws, code, reason) {
+	  closeWebSocketConnection(ws, code, reason, Buffer.byteLength(reason));
+	  failWebsocketConnection(ws, reason);
+	}
+
 	// This code was influenced by ws released under the MIT license.
 	// Copyright (c) 2011 Einar Otto Stangvik <einaros@gmail.com>
 	// Copyright (c) 2013 Arnout Kazemier and contributors
@@ -25618,18 +25896,22 @@ function requireReceiver () {
 	  #extensions
 
 	  /** @type {number} */
+	  #maxFragments
+
+	  /** @type {number} */
 	  #maxPayloadSize
 
 	  /**
 	   * @param {import('./websocket').WebSocket} ws
 	   * @param {Map<string, string>|null} extensions
-	   * @param {{ maxPayloadSize?: number }} [options]
+	   * @param {{ maxFragments?: number, maxPayloadSize?: number }} [options]
 	   */
 	  constructor (ws, extensions, options = {}) {
 	    super();
 
 	    this.ws = ws;
 	    this.#extensions = extensions == null ? new Map() : extensions;
+	    this.#maxFragments = options.maxFragments ?? 0;
 	    this.#maxPayloadSize = options.maxPayloadSize ?? 0;
 
 	    if (this.#extensions.has('permessage-deflate')) {
@@ -25653,9 +25935,9 @@ function requireReceiver () {
 	    if (
 	      this.#maxPayloadSize > 0 &&
 	      !isControlFrame(this.#info.opcode) &&
-	      this.#info.payloadLength > this.#maxPayloadSize
+	      this.#info.payloadLength + this.#fragmentsBytes > this.#maxPayloadSize
 	    ) {
-	      failWebsocketConnection(this.ws, 'Payload size exceeds maximum allowed size');
+	      failWebsocketConnectionWithCode(this.ws, 1009, 'Payload size exceeds maximum allowed size');
 	      return false
 	    }
 
@@ -25820,10 +26102,12 @@ function requireReceiver () {
 	          this.#state = parserStates.INFO;
 	        } else {
 	          if (!this.#info.compressed) {
-	            this.writeFragments(body);
+	            if (!this.writeFragments(body)) {
+	              return
+	            }
 
 	            if (this.#maxPayloadSize > 0 && this.#fragmentsBytes > this.#maxPayloadSize) {
-	              failWebsocketConnection(this.ws, new MessageSizeExceededError().message);
+	              failWebsocketConnectionWithCode(this.ws, 1009, new MessageSizeExceededError().message);
 	              return
 	            }
 
@@ -25842,14 +26126,17 @@ function requireReceiver () {
 	              this.#info.fin,
 	              (error, data) => {
 	                if (error) {
-	                  failWebsocketConnection(this.ws, error.message);
+	                  const code = error instanceof MessageSizeExceededError ? 1009 : 1007;
+	                  failWebsocketConnectionWithCode(this.ws, code, error.message);
 	                  return
 	                }
 
-	                this.writeFragments(data);
+	                if (!this.writeFragments(data)) {
+	                  return
+	                }
 
 	                if (this.#maxPayloadSize > 0 && this.#fragmentsBytes > this.#maxPayloadSize) {
-	                  failWebsocketConnection(this.ws, new MessageSizeExceededError().message);
+	                  failWebsocketConnectionWithCode(this.ws, 1009, new MessageSizeExceededError().message);
 	                  return
 	                }
 
@@ -25919,8 +26206,17 @@ function requireReceiver () {
 	  }
 
 	  writeFragments (fragment) {
+	    if (
+	      this.#maxFragments > 0 &&
+	      this.#fragments.length === this.#maxFragments
+	    ) {
+	      failWebsocketConnectionWithCode(this.ws, 1008, 'Too many message fragments');
+	      return false
+	    }
+
 	    this.#fragmentsBytes += fragment.length;
 	    this.#fragments.push(fragment);
+	    return true
 	  }
 
 	  consumeFragments () {
@@ -26623,9 +26919,12 @@ function requireWebsocket () {
 	    // once this happens, the connection is open
 	    this[kResponse] = response;
 
-	    const maxPayloadSize = this[kController]?.dispatcher?.webSocketOptions?.maxPayloadSize;
+	    const webSocketOptions = this[kController]?.dispatcher?.webSocketOptions;
+	    const maxFragments = webSocketOptions?.maxFragments;
+	    const maxPayloadSize = webSocketOptions?.maxPayloadSize;
 
 	    const parser = new ByteParser(this, parsedExtensions, {
+	      maxFragments,
 	      maxPayloadSize
 	    });
 	    parser.on('drain', onParserDrain);
@@ -26856,6 +27155,49 @@ function requireEventsourceStream () {
 	 */
 	const SPACE = 0x20;
 
+	const DATA = Buffer.from('data');
+	const EVENT = Buffer.from('event');
+	const ID = Buffer.from('id');
+	const RETRY = Buffer.from('retry');
+
+	function isASCIINumberBytes (buffer, start) {
+	  if (start >= buffer.length) {
+	    return false
+	  }
+
+	  for (let i = start; i < buffer.length; i++) {
+	    if (buffer[i] < 0x30 || buffer[i] > 0x39) {
+	      return false
+	    }
+	  }
+
+	  return true
+	}
+
+	function isValidLastEventIdBytes (buffer, start) {
+	  for (let i = start; i < buffer.length; i++) {
+	    if (buffer[i] === 0x00) {
+	      return false
+	    }
+	  }
+
+	  return true
+	}
+
+	function isFieldName (line, length, field) {
+	  if (length !== field.length) {
+	    return false
+	  }
+
+	  for (let i = 0; i < length; i++) {
+	    if (line[i] !== field[i]) {
+	      return false
+	    }
+	  }
+
+	  return true
+	}
+
 	/**
 	 * @typedef {object} EventSourceStreamEvent
 	 * @type {object}
@@ -26896,11 +27238,14 @@ function requireEventsourceStream () {
 	  eventEndCheck = false
 
 	  /**
-	   * @type {Buffer}
+	   * @type {Buffer[]}
 	   */
-	  buffer = null
+	  chunks = []
 
+	  chunkIndex = 0
 	  pos = 0
+	  lineChunkIndex = 0
+	  linePos = 0
 
 	  event = {
 	    data: undefined,
@@ -26939,92 +27284,20 @@ function requireEventsourceStream () {
 	      return
 	    }
 
-	    // Cache the chunk in the buffer, as the data might not be complete while
-	    // processing it
-	    // TODO: Investigate if there is a more performant way to handle
-	    // incoming chunks
-	    // see: https://github.com/nodejs/undici/issues/2630
-	    if (this.buffer) {
-	      this.buffer = Buffer.concat([this.buffer, chunk]);
-	    } else {
-	      this.buffer = chunk;
-	    }
+	    this.chunks.push(chunk);
 
 	    // Strip leading byte-order-mark if we opened the stream and started
 	    // the processing of the incoming data
 	    if (this.checkBOM) {
-	      switch (this.buffer.length) {
-	        case 1:
-	          // Check if the first byte is the same as the first byte of the BOM
-	          if (this.buffer[0] === BOM[0]) {
-	            // If it is, we need to wait for more data
-	            callback();
-	            return
-	          }
-	          // Set the checkBOM flag to false as we don't need to check for the
-	          // BOM anymore
-	          this.checkBOM = false;
-
-	          // The buffer only contains one byte so we need to wait for more data
-	          callback();
-	          return
-	        case 2:
-	          // Check if the first two bytes are the same as the first two bytes
-	          // of the BOM
-	          if (
-	            this.buffer[0] === BOM[0] &&
-	            this.buffer[1] === BOM[1]
-	          ) {
-	            // If it is, we need to wait for more data, because the third byte
-	            // is needed to determine if it is the BOM or not
-	            callback();
-	            return
-	          }
-
-	          // Set the checkBOM flag to false as we don't need to check for the
-	          // BOM anymore
-	          this.checkBOM = false;
-	          break
-	        case 3:
-	          // Check if the first three bytes are the same as the first three
-	          // bytes of the BOM
-	          if (
-	            this.buffer[0] === BOM[0] &&
-	            this.buffer[1] === BOM[1] &&
-	            this.buffer[2] === BOM[2]
-	          ) {
-	            // If it is, we can drop the buffered data, as it is only the BOM
-	            this.buffer = Buffer.alloc(0);
-	            // Set the checkBOM flag to false as we don't need to check for the
-	            // BOM anymore
-	            this.checkBOM = false;
-
-	            // Await more data
-	            callback();
-	            return
-	          }
-	          // If it is not the BOM, we can start processing the data
-	          this.checkBOM = false;
-	          break
-	        default:
-	          // The buffer is longer than 3 bytes, so we can drop the BOM if it is
-	          // present
-	          if (
-	            this.buffer[0] === BOM[0] &&
-	            this.buffer[1] === BOM[1] &&
-	            this.buffer[2] === BOM[2]
-	          ) {
-	            // Remove the BOM from the buffer
-	            this.buffer = this.buffer.subarray(3);
-	          }
-
-	          // Set the checkBOM flag to false as we don't need to check for the
-	          this.checkBOM = false;
-	          break
+	      if (this.handleBOM()) {
+	        callback();
+	        return
 	      }
 	    }
 
-	    while (this.pos < this.buffer.length) {
+	    while (this.hasCurrentByte()) {
+	      const byte = this.currentByte();
+
 	      // If the previous line ended with an end-of-line, we need to check
 	      // if the next character is also an end-of-line.
 	      if (this.eventEndCheck) {
@@ -27037,10 +27310,9 @@ function requireEventsourceStream () {
 	        if (this.crlfCheck) {
 	          // If the current character is a line feed, we can remove it
 	          // from the buffer and reset the crlfCheck flag
-	          if (this.buffer[this.pos] === LF) {
-	            this.buffer = this.buffer.subarray(this.pos + 1);
-	            this.pos = 0;
+	          if (byte === LF) {
 	            this.crlfCheck = false;
+	            this.consumeCurrentByte();
 
 	            // It is possible that the line feed is not the end of the
 	            // event. We need to check if the next character is an
@@ -27056,19 +27328,17 @@ function requireEventsourceStream () {
 	          this.crlfCheck = false;
 	        }
 
-	        if (this.buffer[this.pos] === LF || this.buffer[this.pos] === CR) {
+	        if (byte === LF || byte === CR) {
 	          // If the current character is a carriage return, we need to
 	          // set the crlfCheck flag to true, as we need to check if the
 	          // next character is a line feed so we can remove it from the
 	          // buffer
-	          if (this.buffer[this.pos] === CR) {
+	          if (byte === CR) {
 	            this.crlfCheck = true;
 	          }
 
-	          this.buffer = this.buffer.subarray(this.pos + 1);
-	          this.pos = 0;
-	          if (
-	            this.event.data !== undefined || this.event.event || this.event.id || this.event.retry) {
+	          this.consumeCurrentByte();
+	          if (this.hasPendingEvent()) {
 	            this.processEvent(this.event);
 	          }
 	          this.clearEvent();
@@ -27082,22 +27352,18 @@ function requireEventsourceStream () {
 
 	      // If the current character is an end-of-line, we can process the
 	      // line
-	      if (this.buffer[this.pos] === LF || this.buffer[this.pos] === CR) {
+	      if (byte === LF || byte === CR) {
 	        // If the current character is a carriage return, we need to
 	        // set the crlfCheck flag to true, as we need to check if the
 	        // next character is a line feed
-	        if (this.buffer[this.pos] === CR) {
+	        if (byte === CR) {
 	          this.crlfCheck = true;
 	        }
 
 	        // In any case, we can process the line as we reached an
 	        // end-of-line character
-	        this.parseLine(this.buffer.subarray(0, this.pos), this.event);
-
-	        // Remove the processed line from the buffer
-	        this.buffer = this.buffer.subarray(this.pos + 1);
-	        // Reset the position as we removed the processed line from the buffer
-	        this.pos = 0;
+	        this.parseLine(this.readLine(), this.event);
+	        this.consumeCurrentByte();
 	        // A line was processed and this could be the end of the event. We need
 	        // to check if the next line is empty to determine if the event is
 	        // finished.
@@ -27105,7 +27371,7 @@ function requireEventsourceStream () {
 	        continue
 	      }
 
-	      this.pos++;
+	      this.advanceCursor();
 	    }
 
 	    callback();
@@ -27130,64 +27396,53 @@ function requireEventsourceStream () {
 	      return
 	    }
 
-	    let field = '';
-	    let value = '';
+	    let fieldLength = line.length;
+	    let valueStart = line.length;
 
 	    // If the line contains a U+003A COLON character (:)
 	    if (colonPosition !== -1) {
-	      // Collect the characters on the line before the first U+003A COLON
-	      // character (:), and let field be that string.
-	      // TODO: Investigate if there is a more performant way to extract the
-	      // field
-	      // see: https://github.com/nodejs/undici/issues/2630
-	      field = line.subarray(0, colonPosition).toString('utf8');
+	      fieldLength = colonPosition;
 
 	      // Collect the characters on the line after the first U+003A COLON
 	      // character (:), and let value be that string.
 	      // If value starts with a U+0020 SPACE character, remove it from value.
-	      let valueStart = colonPosition + 1;
+	      valueStart = colonPosition + 1;
 	      if (line[valueStart] === SPACE) {
 	        ++valueStart;
 	      }
-	      // TODO: Investigate if there is a more performant way to extract the
-	      // value
-	      // see: https://github.com/nodejs/undici/issues/2630
-	      value = line.subarray(valueStart).toString('utf8');
-
-	      // Otherwise, the string is not empty but does not contain a U+003A COLON
-	      // character (:)
-	    } else {
-	      // Process the field using the steps described below, using the whole
-	      // line as the field name, and the empty string as the field value.
-	      field = line.toString('utf8');
-	      value = '';
 	    }
 
-	    // Modify the event with the field name and value. The value is also
-	    // decoded as UTF-8
-	    switch (field) {
-	      case 'data':
-	        if (event[field] === undefined) {
-	          event[field] = value;
-	        } else {
-	          event[field] += `\n${value}`;
-	        }
-	        break
-	      case 'retry':
-	        if (isASCIINumber(value)) {
-	          event[field] = value;
-	        }
-	        break
-	      case 'id':
-	        if (isValidLastEventId(value)) {
-	          event[field] = value;
-	        }
-	        break
-	      case 'event':
-	        if (value.length > 0) {
-	          event[field] = value;
-	        }
-	        break
+	    if (isFieldName(line, fieldLength, DATA)) {
+	      const value = line.toString('utf8', valueStart);
+
+	      if (event.data === undefined) {
+	        event.data = value;
+	      } else {
+	        event.data += `\n${value}`;
+	      }
+	      return
+	    }
+
+	    if (isFieldName(line, fieldLength, RETRY)) {
+	      if (isASCIINumberBytes(line, valueStart)) {
+	        event.retry = line.toString('utf8', valueStart);
+	      }
+	      return
+	    }
+
+	    if (isFieldName(line, fieldLength, ID)) {
+	      if (isValidLastEventIdBytes(line, valueStart)) {
+	        event.id = line.toString('utf8', valueStart);
+	      }
+	      return
+	    }
+
+	    if (isFieldName(line, fieldLength, EVENT)) {
+	      const value = line.toString('utf8', valueStart);
+
+	      if (value.length > 0) {
+	        event.event = value;
+	      }
 	    }
 	  }
 
@@ -27217,12 +27472,151 @@ function requireEventsourceStream () {
 	  }
 
 	  clearEvent () {
-	    this.event = {
-	      data: undefined,
-	      event: undefined,
-	      id: undefined,
-	      retry: undefined
-	    };
+	    this.event.data = undefined;
+	    this.event.event = undefined;
+	    this.event.id = undefined;
+	    this.event.retry = undefined;
+	  }
+
+	  hasPendingEvent () {
+	    return this.event.data !== undefined ||
+	      this.event.event !== undefined ||
+	      this.event.id !== undefined ||
+	      this.event.retry !== undefined
+	  }
+
+	  hasCurrentByte () {
+	    return this.chunkIndex < this.chunks.length &&
+	      this.pos < this.chunks[this.chunkIndex].length
+	  }
+
+	  currentByte () {
+	    return this.chunks[this.chunkIndex][this.pos]
+	  }
+
+	  consumeCurrentByte () {
+	    this.advanceCursor();
+	    this.syncLineStartToCursor();
+	  }
+
+	  advanceCursor () {
+	    this.pos++;
+
+	    while (this.chunkIndex < this.chunks.length && this.pos >= this.chunks[this.chunkIndex].length) {
+	      this.chunkIndex++;
+	      this.pos = 0;
+	    }
+	  }
+
+	  syncLineStartToCursor () {
+	    this.lineChunkIndex = this.chunkIndex;
+	    this.linePos = this.pos;
+	    this.dropConsumedChunks();
+	  }
+
+	  dropConsumedChunks () {
+	    while (this.lineChunkIndex > 0) {
+	      this.chunks.shift();
+	      this.lineChunkIndex--;
+	      this.chunkIndex--;
+	    }
+
+	    if (this.chunkIndex === this.chunks.length) {
+	      this.chunks.length = 0;
+	      this.chunkIndex = 0;
+	      this.pos = 0;
+	      this.lineChunkIndex = 0;
+	      this.linePos = 0;
+	    }
+	  }
+
+	  readLine () {
+	    if (this.lineChunkIndex === this.chunkIndex) {
+	      return this.chunks[this.chunkIndex].subarray(this.linePos, this.pos)
+	    }
+
+	    const chunks = [];
+	    let length = 0;
+
+	    for (let i = this.lineChunkIndex; i <= this.chunkIndex; i++) {
+	      const chunk = this.chunks[i];
+	      const start = i === this.lineChunkIndex ? this.linePos : 0;
+	      const end = i === this.chunkIndex ? this.pos : chunk.length;
+	      const slice = chunk.subarray(start, end);
+	      length += slice.length;
+	      chunks.push(slice);
+	    }
+
+	    return Buffer.concat(chunks, length)
+	  }
+
+	  peekBufferedByte (offset) {
+	    let chunkIndex = this.lineChunkIndex;
+	    let pos = this.linePos;
+
+	    while (chunkIndex < this.chunks.length) {
+	      const chunk = this.chunks[chunkIndex];
+	      const remaining = chunk.length - pos;
+
+	      if (offset < remaining) {
+	        return chunk[pos + offset]
+	      }
+
+	      offset -= remaining;
+	      chunkIndex++;
+	      pos = 0;
+	    }
+	  }
+
+	  discardLeadingBytes (count) {
+	    while (count > 0 && this.lineChunkIndex < this.chunks.length) {
+	      const chunk = this.chunks[this.lineChunkIndex];
+	      const remaining = chunk.length - this.linePos;
+
+	      if (count < remaining) {
+	        this.linePos += count;
+	        count = 0;
+	      } else {
+	        count -= remaining;
+	        this.lineChunkIndex++;
+	        this.linePos = 0;
+	      }
+	    }
+
+	    this.chunkIndex = this.lineChunkIndex;
+	    this.pos = this.linePos;
+	    this.dropConsumedChunks();
+	  }
+
+	  handleBOM () {
+	    const first = this.peekBufferedByte(0);
+	    const second = this.peekBufferedByte(1);
+	    const third = this.peekBufferedByte(2);
+
+	    if (second === undefined) {
+	      if (first === BOM[0]) {
+	        return true
+	      }
+
+	      this.checkBOM = false;
+	      return true
+	    }
+
+	    if (third === undefined) {
+	      if (first === BOM[0] && second === BOM[1]) {
+	        return true
+	      }
+
+	      this.checkBOM = false;
+	      return false
+	    }
+
+	    if (first === BOM[0] && second === BOM[1] && third === BOM[2]) {
+	      this.discardLeadingBytes(3);
+	    }
+
+	    this.checkBOM = false;
+	    return !this.hasCurrentByte()
 	  }
 	}
 
@@ -33974,28 +34368,6 @@ function requireFs_realpath () {
 	return fs_realpath;
 }
 
-var concatMap;
-var hasRequiredConcatMap;
-
-function requireConcatMap () {
-	if (hasRequiredConcatMap) return concatMap;
-	hasRequiredConcatMap = 1;
-	concatMap = function (xs, fn) {
-	    var res = [];
-	    for (var i = 0; i < xs.length; i++) {
-	        var x = fn(xs[i], i);
-	        if (isArray(x)) res.push.apply(res, x);
-	        else res.push(x);
-	    }
-	    return res;
-	};
-
-	var isArray = Array.isArray || function (xs) {
-	    return Object.prototype.toString.call(xs) === '[object Array]';
-	};
-	return concatMap;
-}
-
 var balancedMatch;
 var hasRequiredBalancedMatch;
 
@@ -34069,7 +34441,6 @@ var hasRequiredBraceExpansion;
 function requireBraceExpansion () {
 	if (hasRequiredBraceExpansion) return braceExpansion;
 	hasRequiredBraceExpansion = 1;
-	var concatMap = requireConcatMap();
 	var balanced = requireBalancedMatch();
 
 	braceExpansion = expandTop;
@@ -34079,6 +34450,40 @@ function requireBraceExpansion () {
 	var escClose = '\0CLOSE'+Math.random()+'\0';
 	var escComma = '\0COMMA'+Math.random()+'\0';
 	var escPeriod = '\0PERIOD'+Math.random()+'\0';
+
+	var EXPANSION_MAX = 100000;
+
+	// `EXPANSION_MAX` caps the *number* of expansions, but not their length. An
+	// input like `'{a,b}'.repeat(1500)` stays under that count - its output is
+	// truncated to 100k results - while making every result ~1500 characters
+	// long. The result set, and the intermediate arrays built while combining
+	// brace sets, then grow large enough to exhaust memory and crash the process
+	// (CVE-2026-14257). `EXPANSION_MAX_LENGTH` bounds the total number of
+	// characters the accumulator may hold at any point, so memory stays flat no
+	// matter how many brace groups are chained. The limit sits well above any
+	// realistic expansion (100k results hitting `EXPANSION_MAX` measure ~1M
+	// characters) so legitimate input is unaffected.
+	var EXPANSION_MAX_LENGTH = 4000000;
+
+	// `expand` recurses once per level of brace *nesting* - both when expanding a
+	// set's comma members and when re-wrapping a set whose body is a single part.
+	// The CVE-2026-14257 fix made the *tail* iterative (recursion on `m.post`, one
+	// level per chained group), which left nesting depth unbounded: about 3,100
+	// levels of `{{{...a,b...}}}` - only ~6KB of input - exhausted the native stack
+	// and crashed the process. `EXPANSION_MAX_DEPTH` bounds how deep the parser
+	// will follow nesting. It sits far above any realistic pattern and well below
+	// the depth at which the stack runs out.
+	var EXPANSION_MAX_DEPTH = 1000;
+
+	// Bash keeps a quirk where a brace group followed by a comma set still expands
+	// (`{a},b}`). The parser implements it by rewriting the string and restarting
+	// the scan, absorbing one `}` per pass. `n` trailing braces therefore cost `n`
+	// full passes over a string that itself grows by one `escClose` sentinel each
+	// time - quadratic in `n`, with a ~26x constant from the sentinel's length.
+	// 128KB of `'{a}' + '}'.repeat(n) + ',z}'` blocked the event loop for 27
+	// seconds to produce two results. `EXPANSION_MAX_REWRITES` bounds how many
+	// times the scan may restart. Real `{a},b}` input needs a handful.
+	var EXPANSION_MAX_REWRITES = 1000;
 
 	function numeric(str) {
 	  return parseInt(str, 10) == str
@@ -34103,34 +34508,54 @@ function requireBraceExpansion () {
 	}
 
 
+	// Like `target.push(...items)` but doesn't overflow the stack
+	function pushAll(target, items) {
+	  for (var i = 0; i < items.length; i++) {
+	    target.push(items[i]);
+	  }
+	}
+
 	// Basically just str.split(","), but handling cases
 	// where we have nested braced sections, which should be
 	// treated as individual members, like {a,{b,c},d}
 	function parseCommaParts(str) {
-	  if (!str)
-	    return [''];
-
 	  var parts = [];
-	  var m = balanced('{', '}', str);
 
-	  if (!m)
-	    return str.split(',');
+	  // Walk the brace groups iteratively. Recursing on `post` once per group let a
+	  // chain of them exhaust the stack - the parsing-side counterpart to
+	  // the `expand` overflow fixed for CVE-2026-14257, and not something `max` or
+	  // `maxLength` can bound, since it happens before expansion.
+	  //
+	  // The part the next chunk continues
+	  var carry = '';
 
-	  var pre = m.pre;
-	  var body = m.body;
-	  var post = m.post;
-	  var p = pre.split(',');
+	  for (;;) {
+	    var m = balanced('{', '}', str);
 
-	  p[p.length-1] += '{' + body + '}';
-	  var postParts = parseCommaParts(post);
-	  if (post.length) {
-	    p[p.length-1] += postParts.shift();
-	    p.push.apply(p, postParts);
+	    if (!m) {
+	      var tail = str.split(',');
+	      tail[0] = carry + tail[0];
+	      pushAll(parts, tail);
+	      return parts;
+	    }
+
+	    var pre = m.pre;
+	    var body = m.body;
+	    var post = m.post;
+	    var p = pre.split(',');
+
+	    p[0] = carry + p[0];
+	    p[p.length-1] += '{' + body + '}';
+
+	    if (!post.length) {
+	      pushAll(parts, p);
+	      return parts;
+	    }
+
+	    carry = p.pop();
+	    pushAll(parts, p);
+	    str = post;
 	  }
-
-	  parts.push.apply(parts, p);
-
-	  return parts;
 	}
 
 	function expandTop(str, options) {
@@ -34138,7 +34563,10 @@ function requireBraceExpansion () {
 	    return [];
 
 	  options = options || {};
-	  var max = options.max == null ? Infinity : options.max;
+	  var max = options.max == null ? EXPANSION_MAX : options.max;
+	  var maxLength = options.maxLength == null ? EXPANSION_MAX_LENGTH : options.maxLength;
+	  var maxDepth = options.maxDepth == null ? EXPANSION_MAX_DEPTH : options.maxDepth;
+	  var maxRewrites = options.maxRewrites == null ? EXPANSION_MAX_REWRITES : options.maxRewrites;
 
 	  // I don't know why Bash 4.3 does this, but it does.
 	  // Anything starting with {} will have the first two bytes preserved
@@ -34150,7 +34578,7 @@ function requireBraceExpansion () {
 	    str = '\\{\\}' + str.substr(2);
 	  }
 
-	  return expand(escapeBraces(str), max, true).map(unescapeBraces);
+	  return expand(escapeBraces(str), max, maxLength, maxDepth, 0, maxRewrites, true).map(unescapeBraces);
 	}
 
 	function embrace(str) {
@@ -34167,106 +34595,284 @@ function requireBraceExpansion () {
 	  return i >= y;
 	}
 
-	function expand(str, max, isTop) {
-	  var expansions = [];
-
-	  var m = balanced('{', '}', str);
-	  if (!m || /\$$/.test(m.pre)) return [str];
-
-	  var isNumericSequence = /^-?\d+\.\.-?\d+(?:\.\.-?\d+)?$/.test(m.body);
-	  var isAlphaSequence = /^[a-zA-Z]\.\.[a-zA-Z](?:\.\.-?\d+)?$/.test(m.body);
-	  var isSequence = isNumericSequence || isAlphaSequence;
-	  var isOptions = m.body.indexOf(',') >= 0;
-	  if (!isSequence && !isOptions) {
-	    // {a},b}
-	    if (m.post.match(/,(?!,).*\}/)) {
-	      str = m.pre + '{' + m.body + escClose + m.post;
-	      return expand(str, max, true);
+	// Build `{ acc[a] + pre + values[v] }` for every combination, capping the
+	// number of results at `max` and the total number of characters at `maxLength`.
+	// This is the one place output grows, so bounding it here keeps the single
+	// accumulator - and therefore memory - flat regardless of how many brace groups
+	// are combined (CVE-2026-14257).
+	//
+	// `base[a]` is the length of the part of `acc[a]` that predates the current
+	// empty-drop baseline (see `expand`). The matching baselines for the results
+	// are appended to `outBase`, which the caller carries forward alongside them.
+	function combine(
+	  acc,
+	  base,
+	  pre,
+	  values,
+	  max,
+	  maxLength,
+	  dropEmpties,
+	  outBase
+	) {
+	  var out = [];
+	  var length = 0;
+	  for (var a = 0; a < acc.length; a++) {
+	    for (var v = 0; v < values.length; v++) {
+	      if (out.length >= max) return out
+	      var expansion = acc[a] + pre + values[v];
+	      // Bash drops empty results at the top level. Skip them before they count
+	      // against `max`, so `max` bounds the number of *kept* results. "Empty"
+	      // means "adds nothing past the baseline", not "empty overall".
+	      if (dropEmpties && expansion.length === base[a]) continue
+	      if (length + expansion.length > maxLength) return out
+	      out.push(expansion);
+	      outBase.push(base[a]);
+	      length += expansion.length;
 	    }
-	    return [str];
 	  }
+	  return out
+	}
 
-	  var n;
-	  if (isSequence) {
-	    n = m.body.split(/\.\./);
-	  } else {
-	    n = parseCommaParts(m.body);
-	    if (n.length === 1) {
-	      // x{{a,b}}y ==> x{a}y x{b}y
-	      n = expand(n[0], max, false).map(embrace);
-	      if (n.length === 1) {
-	        var post = m.post.length
-	          ? expand(m.post, max, false)
-	          : [''];
-	        return post.map(function(p) {
-	          return m.pre + n[0] + p;
-	        });
+	// The expansion values of a single numeric (`1..5`) or alphabetic (`a..e..2`)
+	// sequence body.
+	function expandSequence(
+	  body,
+	  isAlphaSequence,
+	  max,
+	  maxLength
+	) {
+	  var n = body.split(/\.\./);
+	  var N = [];
+	  // A sequence body always splits into two or three parts, but the compiler
+	  // can't know that.
+	  /* c8 ignore start */
+	  if (n[0] === undefined || n[1] === undefined) {
+	    return N
+	  }
+	  /* c8 ignore stop */
+	  var x = numeric(n[0]);
+	  var y = numeric(n[1]);
+	  var width = Math.max(n[0].length, n[1].length);
+	  var incr =
+	    n.length === 3 && n[2] !== undefined ?
+	      Math.max(Math.abs(numeric(n[2])), 1)
+	    : 1;
+	  var test = lte;
+	  var reverse = y < x;
+	  if (reverse) {
+	    incr *= -1;
+	    test = gte;
+	  }
+	  var pad = n.some(isPadded);
+
+	  var length = 0;
+	  for (var i = x; test(i, y) && N.length < max; i += incr) {
+	    var c;
+	    if (isAlphaSequence) {
+	      c = String.fromCharCode(i);
+	      if (c === '\\') {
+	        c = '';
 	      }
-	    }
-	  }
-
-	  // at this point, n is the parts, and we know it's not a comma set
-	  // with a single entry.
-
-	  // no need to expand pre, since it is guaranteed to be free of brace-sets
-	  var pre = m.pre;
-	  var post = m.post.length
-	    ? expand(m.post, max, false)
-	    : [''];
-
-	  var N;
-
-	  if (isSequence) {
-	    var x = numeric(n[0]);
-	    var y = numeric(n[1]);
-	    var width = Math.max(n[0].length, n[1].length);
-	    var incr = n.length == 3
-	      ? Math.max(Math.abs(numeric(n[2])), 1)
-	      : 1;
-	    var test = lte;
-	    var reverse = y < x;
-	    if (reverse) {
-	      incr *= -1;
-	      test = gte;
-	    }
-	    var pad = n.some(isPadded);
-
-	    N = [];
-
-	    for (var i = x; test(i, y); i += incr) {
-	      var c;
-	      if (isAlphaSequence) {
-	        c = String.fromCharCode(i);
-	        if (c === '\\')
-	          c = '';
-	      } else {
-	        c = String(i);
-	        if (pad) {
-	          var need = width - c.length;
-	          if (need > 0) {
-	            var z = new Array(need + 1).join('0');
-	            if (i < 0)
-	              c = '-' + z + c.slice(1);
-	            else
-	              c = z + c;
+	    } else {
+	      c = String(i);
+	      if (pad) {
+	        var need = width - c.length;
+	        if (need > 0) {
+	          var z = new Array(need + 1).join('0');
+	          if (i < 0) {
+	            c = '-' + z + c.slice(1);
+	          } else {
+	            c = z + c;
 	          }
 	        }
 	      }
-	      N.push(c);
 	    }
-	  } else {
-	    N = concatMap(n, function(el) { return expand(el, max, false) });
+	    if (length + c.length > maxLength) break
+	    N.push(c);
+	    length += c.length;
+	  }
+	  return N
+	}
+
+	function expand(
+	  str,
+	  max,
+	  maxLength,
+	  maxDepth,
+	  depth,
+	  maxRewrites,
+	  isTop
+	) {
+	  // Too deeply nested to keep following: treat the rest as literal, the same
+	  // way a group that cannot expand is already handled. Truncating rather than
+	  // throwing keeps expansion total, matching `max` and `maxLength`.
+	  if (depth > maxDepth) {
+	    return [str];
 	  }
 
-	  for (var j = 0; j < N.length; j++) {
-	    for (var k = 0; k < post.length && expansions.length < max; k++) {
-	      var expansion = pre + N[j] + post[k];
-	      if (!isTop || isSequence || expansion)
-	        expansions.push(expansion);
+	  // Consume the string's top-level brace groups left to right, threading a
+	  // running set of combined prefixes (`acc`). Expanding the tail iteratively -
+	  // rather than recursing on `m.post` once per group - keeps the native stack
+	  // depth constant, so deeply chained input (`'{a,b}'.repeat(3000)`) can no
+	  // longer overflow the stack, and leaves a single accumulator whose size
+	  // `maxLength` bounds directly (CVE-2026-14257).
+	  var acc = [''];
+
+	  // Bash drops empty results, but only when the *first* group of the run is a
+	  // comma set - a sequence like `{a..\}` may legitimately yield ''. The drop
+	  // is on the final strings, so it is applied to whichever `combine` produces
+	  // them (the one with no brace set left in the tail).
+	  //
+	  // The old implementation recursed on `m.post`, so the drop tested only the
+	  // expansion of the current call's substring. The `{a},b}` rewrite below turns
+	  // `isTop` back on part-way through a string, starting a fresh such run, so
+	  // the drop must ignore whatever `acc` already holds from earlier groups.
+	  // `accBase[a]` records how much of `acc[a]` predates the current run;
+	  // `combine` treats an expansion as empty when it adds nothing past that.
+	  var accBase = [0];
+	  // How many times the `{a},b}` rewrite below has restarted the scan. Each pass
+	  // re-reads the whole string, so leaving this unbounded is quadratic.
+	  var rewrites = 0;
+	  var dropEmpties = false;
+	  var firstGroup = true;
+	  var nextBase;
+
+	  for (;;) {
+	    var m = balanced('{', '}', str);
+
+	    // No brace set left: the rest of the string is literal.
+	    if (!m) {
+	      return combine(acc, accBase, str, [''], max, maxLength, dropEmpties, [])
 	    }
+
+	    // no need to expand pre, since it is guaranteed to be free of brace-sets
+	    var pre = m.pre;
+
+	    // For compatibility reasons, `${` is not eligible for brace expansion, and
+	    // on the 1.x line it suppresses expansion of the rest of the string too:
+	    // the whole remainder is literal. The 2.x and 5.x lines instead keep
+	    // expanding the tail, which is what bash does, but changing that here would
+	    // be a breaking change for 1.x consumers. Routed through `combine` so the
+	    // result is still bounded by `max` and `maxLength`.
+	    if (/\$$/.test(pre)) {
+	      return combine(acc, accBase, str, [''], max, maxLength, dropEmpties, [])
+	    }
+
+	    var isNumericSequence = /^-?\d+\.\.-?\d+(?:\.\.-?\d+)?$/.test(m.body);
+	    var isAlphaSequence = /^[a-zA-Z]\.\.[a-zA-Z](?:\.\.-?\d+)?$/.test(m.body);
+	    var isSequence = isNumericSequence || isAlphaSequence;
+	    var isOptions = m.body.indexOf(',') >= 0;
+	    if (!isSequence && !isOptions) {
+	      // {a},b}
+	      if (rewrites < maxRewrites && m.post.match(/,(?!,).*\}/)) {
+	        rewrites++;
+	        str = m.pre + '{' + m.body + escClose + m.post;
+	        // The rewritten string is expanded as if it were a fresh top-level one,
+	        // so start a new empty-drop run: anchor the baseline at what `acc`
+	        // holds now, and let the next expanding group decide whether to drop.
+	        isTop = true;
+	        firstGroup = true;
+	        dropEmpties = false;
+	        accBase = [];
+	        for (var b = 0; b < acc.length; b++) {
+	          accBase.push(acc[b].length);
+	        }
+	        continue
+	      }
+	      // Nothing here expands, so the whole remaining string is literal.
+	      return combine(
+	        acc,
+	        accBase,
+	        pre + '{' + m.body + '}' + m.post,
+	        [''],
+	        max,
+	        maxLength,
+	        dropEmpties,
+	        []
+	      )
+	    }
+
+	    if (firstGroup) {
+	      dropEmpties = isTop && !isSequence;
+	      firstGroup = false;
+	    }
+
+	    var values;
+	    if (isSequence) {
+	      values = expandSequence(m.body, isAlphaSequence, max, maxLength);
+	    } else {
+	      var n = parseCommaParts(m.body);
+	      if (n.length === 1 && n[0] !== undefined) {
+	        // x{{a,b}}y ==> x{a}y x{b}y
+	        n = expand(n[0], max, maxLength, maxDepth, depth + 1, maxRewrites, false).map(embrace);
+	        //XXX is this necessary? Can't seem to hit it in tests.
+	        /* c8 ignore start */
+	        if (n.length === 1) {
+	          nextBase = [];
+	          acc = combine(
+	            acc,
+	            accBase,
+	            pre + n[0],
+	            [''],
+	            max,
+	            maxLength,
+	            dropEmpties && !m.post.length,
+	            nextBase
+	          );
+	          accBase = nextBase;
+	          if (!m.post.length) break
+	          str = m.post;
+	          continue
+	        }
+	        /* c8 ignore stop */
+	      }
+
+	      // Values that `combine` is going to drop as empty produce no result, so
+	      // they must not count against `max` - otherwise `{a,,b}` with `max: 2`
+	      // would stop at `['a', '']` and yield one result instead of two. Skipping
+	      // them outright keeps `values` bounded while leaving `max` a bound on
+	      // *kept* results. A value is dropped when it adds nothing past the
+	      // baseline, which is what `combine` tests.
+	      var dropsEmpties = dropEmpties && !m.post.length && !pre;
+	      for (var d = 0; dropsEmpties && d < acc.length; d++) {
+	        if (acc[d].length !== accBase[d]) {
+	          dropsEmpties = false;
+	        }
+	      }
+
+	      values = [];
+	      var valuesLength = 0;
+	      outer: for (var j = 0; j < n.length; j++) {
+	        var expanded = expand(n[j], max, maxLength, maxDepth, depth + 1, maxRewrites, false);
+	        for (var k = 0; k < expanded.length; k++) {
+	          var v = expanded[k];
+	          if (dropsEmpties && !v) continue
+	          if (values.length >= max || valuesLength + v.length > maxLength) {
+	            break outer
+	          }
+	          values.push(v);
+	          valuesLength += v.length;
+	        }
+	      }
+	    }
+
+	    nextBase = [];
+	    acc = combine(
+	      acc,
+	      accBase,
+	      pre,
+	      values,
+	      max,
+	      maxLength,
+	      dropEmpties && !m.post.length,
+	      nextBase
+	    );
+	    accBase = nextBase;
+	    if (!m.post.length) break
+	    str = m.post;
 	  }
 
-	  return expansions;
+	  return acc
 	}
 	return braceExpansion;
 }
@@ -37200,6 +37806,155 @@ function requireCodeowners () {
 var codeownersExports = requireCodeowners();
 var Codeowners = /*@__PURE__*/getDefaultExportFromCjs(codeownersExports);
 
+// The PRs a merge of `pr` would land, bottom of the stack first. Merging a
+// stacked PR atomically merges every unmerged PR below it too, so those all
+// need the same access and status checks. An unstacked PR is just itself.
+const getMergeRange = async (octokit, repo, pr) => {
+    const stackRef = pr.stack;
+    if (!stackRef) {
+        return [pr.number];
+    }
+    const { data } = await octokit.request("GET /repos/{owner}/{repo}/stacks/{stack_number}", { owner: repo.owner, repo: repo.repo, stack_number: stackRef.number });
+    const members = data.pull_requests;
+    const index = members.findIndex((member) => member.number === pr.number);
+    if (index === -1) {
+        throw new Error(`PR #${pr.number} is not in stack #${stackRef.number}, refusing to merge.`);
+    }
+    return members
+        .slice(0, index + 1)
+        .filter((member) => !member.merged_at)
+        .map((member) => member.number);
+};
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+// Merges through the async merge API, which stacked PRs require (the classic
+// endpoint rejects them) and which works for unstacked PRs too. Polls until
+// the merge settles or `timeoutMs` passes, returning the last result seen.
+// Returns undefined if the API isn't available (404), e.g. on older GHES.
+const mergePullRequestAsync = async (octokit, options, { pollIntervalMs = 2000, timeoutMs = 60_000 } = {}) => {
+    const { owner, repo } = options;
+    let result;
+    try {
+        const response = await octokit.request("PUT /repos/{owner}/{repo}/pulls/{pull_number}/merge-async", { ...options, merge_action: "default" });
+        result = response.data;
+    }
+    catch (error) {
+        const status = error.status;
+        if (status === 404)
+            return undefined;
+        if (status === 409) {
+            throw new Error("A merge is already in progress for this PR.");
+        }
+        throw error;
+    }
+    const deadline = Date.now() + timeoutMs;
+    while (result.status === "pending" && result.details.uuid) {
+        if (Date.now() >= deadline)
+            break;
+        await sleep(pollIntervalMs);
+        const response = await octokit.request("GET /repos/{owner}/{repo}/pulls/{pull_number}/merge-async/{uuid}", {
+            owner,
+            repo,
+            pull_number: options.pull_number,
+            uuid: result.details.uuid,
+        });
+        result = response.data;
+    }
+    return result;
+};
+// Prefers the API's own explanation (e.g. why a merge was rejected) over
+// Octokit's generic "HttpError" wrapper.
+const errorMessage = (error) => {
+    const response = error.response;
+    const data = response?.data;
+    return (data?.details?.message ||
+        data?.message ||
+        (error instanceof Error ? error.message : String(error)));
+};
+// Returns a reason the PR can't be merged yet, or undefined if it can.
+// `which` names the PR in the message ("this PR" or "#12").
+const getMergeBlocker = async (octokit, repo, pr, which) => {
+    if (pr.state !== "open") {
+        return `${which} is closed.`;
+    }
+    if (pr.draft) {
+        return `${which} is a draft.`;
+    }
+    // Don't try merge if mergability is not yet known
+    if (pr.mergeable === null) {
+        return `${which} is still running background checks to compute mergeability. They'll need to complete before this can be merged.`;
+    }
+    // Don't try merge unmergable stuff
+    if (!pr.mergeable) {
+        return `${which} has merge conflicts. They'll need to be fixed before this can be merged.`;
+    }
+    // Don't merge red PRs or PRs with pending statuses. Statuses come newest
+    // first, so keeping the first per context keeps the latest.
+    const statusInfo = await octokit.rest.repos.listCommitStatusesForRef({
+        ...repo,
+        ref: pr.head.sha,
+    });
+    const latestStatuses = statusInfo.data.filter((thing, index, self) => index === self.findIndex((item) => item.context === thing.context));
+    const pendingStatus = latestStatuses.find((status) => status.state === "pending");
+    if (pendingStatus) {
+        return `${which} has pending status checks that haven't completed yet. Blocked by [${pendingStatus.context}](${pendingStatus.target_url}): '${pendingStatus.description}'.`;
+    }
+    const failedStatus = latestStatuses.find((status) => status.state !== "success");
+    if (failedStatus) {
+        return `${which} could not be merged because it wasn't green. Blocked by [${failedStatus.context}](${failedStatus.target_url}): '${failedStatus.description}'.`;
+    }
+    return undefined;
+};
+// Fetches each PR the merge would land (see getMergeRange), bottom first.
+// Fetch these before listing their files, so the head SHAs they record are
+// never newer than what was authorised.
+const getPullRequests = async (octokit, repo, target, range) => Promise.all(range.map(async (number) => number === target.number
+    ? target
+    : (await octokit.rest.pulls.get({ ...repo, pull_number: number })).data));
+// Checks each PR the merge would land, bottom first.
+const getMergeBlockerInRange = async (octokit, repo, prs, targetNumber) => {
+    for (const pr of prs) {
+        const blocker = await getMergeBlocker(octokit, repo, pr, pr.number === targetNumber
+            ? "this PR"
+            : `#${pr.number} (below in the stack)`);
+        if (blocker) {
+            return blocker;
+        }
+    }
+    return undefined;
+};
+// The async merge API only pins the target PR's head SHA, but a stack merge
+// also lands the PRs below it. Returns those whose head has moved since `prs`
+// was fetched, as their new commits haven't been authorised.
+const findMovedHeads = async (octokit, repo, prs) => {
+    const current = await Promise.all(prs.map(async (pr) => (await octokit.rest.pulls.get({ ...repo, pull_number: pr.number }))
+        .data));
+    return current
+        .filter((pr, i) => pr.head.sha !== prs[i].head.sha)
+        .map((pr) => pr.number);
+};
+// Files are listed after `prs` is fetched, and the async merge API pins only
+// the target's head SHA while a stack merge also lands the PRs below it. Just
+// before merging, returns why the range is no longer what was authorised in
+// `prs` (target last), if it isn't.
+const findChangesSinceChecks = async (octokit, repo, prs) => {
+    const target = prs[prs.length - 1];
+    const { data: latest } = await octokit.rest.pulls.get({
+        ...repo,
+        pull_number: target.number,
+    });
+    const latestRange = await getMergeRange(octokit, repo, latest);
+    const unchanged = latestRange.length === prs.length &&
+        latestRange.every((number, i) => number === prs[i].number);
+    if (!unchanged) {
+        return "the stack changed after the checks ran.";
+    }
+    const moved = await findMovedHeads(octokit, repo, prs);
+    if (moved.length) {
+        return `${moved.map((n) => `#${n}`).join(", ")} got new commits after the checks ran.`;
+    }
+    return undefined;
+};
+
 const githubServerUrl = process.env["GITHUB_SERVER_URL"] || "https://github.com";
 const getGithubToken = () => getInput("token") || process.env.GITHUB_TOKEN || "";
 const CODEOWNERS_PATHS = [
@@ -37234,7 +37989,10 @@ const commentOnMergablePRs = async () => {
     if (!pr) {
         throw new Error("Missing pull_request payload");
     }
-    const changedFiles = await getPRChangedFiles(octokit, thisRepo, pr.number);
+    // A stacked PR's LGTM also merges the PRs below it, so owners need to own
+    // those files too for the announcement below to hold.
+    const range = await getMergeRange(octokit, thisRepo, pr);
+    const changedFiles = await getRangeChangedFiles(octokit, thisRepo, range);
     info(`Changed files: \n - ${changedFiles.join("\n - ")}`);
     const codeowners = findCodeOwnersForChangedFiles(changedFiles, cwd);
     info(`Code-owners: \n - ${codeowners.users.join("\n - ")}`);
@@ -37289,7 +38047,7 @@ const commentOnMergablePRs = async () => {
     const owners = formatList(formattedOwnersWhoHaveAccessToAllFilesInPR);
     const message = `Thanks for the PR!
 
-This section of the codebase is owned by ${owners} - if they write a comment saying "LGTM" then it will be merged.
+This section of the codebase is owned by ${owners} - if they write a comment saying "LGTM" then it will be merged.${range.length > 1 ? ` This PR is stacked, so that also merges ${formatPRList(range.slice(0, -1))} below it.` : ""}
 ${ourSignature}`;
     const skipOutput = getInput("quiet");
     if (!skipOutput) {
@@ -37339,112 +38097,120 @@ class Actor {
         this.issue = issue;
         this.sender = sender;
     }
-    async getTargetPRIfHasAccess() {
+    postComment(body) {
+        return this.octokit.rest.issues.createComment({
+            ...this.thisRepo,
+            issue_number: this.issue.number,
+            body,
+        });
+    }
+    // Returns the PRs a merge of this one would land (see getMergeRange), but
+    // only if the sender owns every file changed across all of them.
+    async getMergeRangeIfHasAccess() {
         const { octokit, thisRepo, sender, issue, cwd } = this;
         const org = thisRepo.owner;
         info(`\n\nLooking at the ${context.eventName} from ${sender} in '${issue.title ?? ""}' to see if we can proceed`);
-        const changedFiles = await getPRChangedFiles(octokit, thisRepo, issue.number);
-        info(`Changed files: \n - ${changedFiles.join("\n - ")}`);
-        const filesWhichArentOwned = getFilesNotOwnedByEffectiveOwner(await getEffectiveOwnerStrings(octokit, sender, changedFiles, cwd, org), changedFiles, cwd);
-        if (filesWhichArentOwned.length !== 0) {
-            console.log(`@${sender} does not have access to \n - ${filesWhichArentOwned.join("\n - ")}\n`);
-            listFilesWithOwners(changedFiles, cwd);
-            await octokit.rest.issues.createComment({
-                ...thisRepo,
-                issue_number: issue.number,
-                body: `Sorry @${sender}, you don't have access to these files:\n\n${pathListToMarkdown(filesWhichArentOwned)}.`,
-            });
-            return;
-        }
         const prInfo = await octokit.rest.pulls.get({
             ...thisRepo,
             pull_number: issue.number,
         });
         if (prInfo.data.state.toLowerCase() !== "open") {
-            await octokit.rest.issues.createComment({
-                ...thisRepo,
-                issue_number: issue.number,
-                body: `Sorry @${sender}, this PR isn't open.`,
-            });
+            await this.postComment(`Sorry @${sender}, this PR isn't open.`);
             return;
         }
-        return prInfo;
+        const range = await getMergeRange(octokit, thisRepo, prInfo.data);
+        if (range.length > 1) {
+            info(`Stacked PR: merging this also merges ${formatPRList(range)}`);
+        }
+        const prs = await getPullRequests(octokit, thisRepo, prInfo.data, range);
+        const changedFiles = await getRangeChangedFiles(octokit, thisRepo, range);
+        info(`Changed files: \n - ${changedFiles.join("\n - ")}`);
+        const filesWhichArentOwned = getFilesNotOwnedByEffectiveOwner(await getEffectiveOwnerStrings(octokit, sender, changedFiles, cwd, org), changedFiles, cwd);
+        if (filesWhichArentOwned.length !== 0) {
+            console.log(`@${sender} does not have access to \n - ${filesWhichArentOwned.join("\n - ")}\n`);
+            listFilesWithOwners(changedFiles, cwd);
+            const stackNote = range.length > 1
+                ? `\n\nThis PR is stacked, so merging it would also merge ${formatPRList(range.slice(0, -1))} below it.`
+                : "";
+            await this.postComment(`Sorry @${sender}, you don't have access to these files:\n\n${pathListToMarkdown(filesWhichArentOwned)}.${stackNote}`);
+            return;
+        }
+        return { prInfo, prs };
     }
     async mergeIfHasAccess() {
-        const prInfo = await this.getTargetPRIfHasAccess();
-        if (!prInfo) {
+        const access = await this.getMergeRangeIfHasAccess();
+        if (!access) {
             return;
         }
+        const { prInfo, prs } = access;
+        const range = prs.map((pr) => pr.number);
         const { octokit, thisRepo, issue, sender } = this;
-        // Don't try merge if mergability is not yet known
-        if (prInfo.data.mergeable === null) {
-            await octokit.rest.issues.createComment({
-                ...thisRepo,
-                issue_number: issue.number,
-                body: `Sorry @${sender}, this PR is still running background checks to compute mergeability. They'll need to complete before this can be merged.`,
-            });
+        const blocker = await getMergeBlockerInRange(octokit, thisRepo, prs, issue.number);
+        if (blocker) {
+            await this.postComment(`Sorry @${sender}, ${blocker}`);
             return;
         }
-        // Don't try merge unmergable stuff
-        if (!prInfo.data.mergeable) {
-            await octokit.rest.issues.createComment({
-                ...thisRepo,
-                issue_number: issue.number,
-                body: `Sorry @${sender}, this PR has merge conflicts. They'll need to be fixed before this can be merged.`,
-            });
-            return;
-        }
-        // Don't merge red PRs or PRs with pending statuses
-        const statusInfo = await octokit.rest.repos.listCommitStatusesForRef({
-            ...thisRepo,
-            ref: prInfo.data.head.sha,
-        });
-        const latestStatuses = statusInfo.data.filter((thing, index, self) => index ===
-            self.findIndex((item) => item.target_url === thing.target_url));
-        const pendingStatus = latestStatuses.find((status) => status.state === "pending");
-        if (pendingStatus) {
-            await octokit.rest.issues.createComment({
-                ...thisRepo,
-                issue_number: issue.number,
-                body: `Sorry @${sender}, this PR has pending status checks that haven't completed yet. Blocked by [${pendingStatus.context}](${pendingStatus.target_url}): '${pendingStatus.description}'.`,
-            });
-            return;
-        }
-        const failedStatus = latestStatuses.find((status) => status.state !== "success");
-        if (failedStatus) {
-            await octokit.rest.issues.createComment({
-                ...thisRepo,
-                issue_number: issue.number,
-                body: `Sorry @${sender}, this PR could not be merged because it wasn't green. Blocked by [${failedStatus.context}](${failedStatus.target_url}): '${failedStatus.description}'.`,
-            });
+        const drift = await findChangesSinceChecks(octokit, thisRepo, prs);
+        if (drift) {
+            await this.postComment(`Sorry @${sender}, ${drift} Comment "LGTM" again to merge it as it is now.`);
             return;
         }
         info("Creating comments and merging");
         try {
             const coauthor = `Co-authored-by: ${sender} <${sender}@users.noreply.github.com>`;
-            const mergeMethodInput = getInput("merge_method");
-            await octokit.rest.pulls.merge({
+            const mergeMethod = getInput("merge_method") || "merge";
+            const mergeOptions = {
                 ...thisRepo,
                 pull_number: issue.number,
-                merge_method: mergeMethodInput || "merge",
+                merge_method: mergeMethod,
                 commit_message: coauthor,
-            });
-            await octokit.rest.issues.createComment({
-                ...thisRepo,
-                issue_number: issue.number,
-                body: `Merging because @${sender} is a code-owner of all the changes - thanks!`,
-            });
+                // Refuse to merge if someone pushed after the checks above ran
+                sha: prInfo.data.head.sha,
+            };
+            let result = await mergePullRequestAsync(octokit, mergeOptions);
+            if (!result) {
+                if (range.length > 1) {
+                    throw new Error("The async merge API, which stacked PRs require, isn't available.");
+                }
+                // Older GitHub Enterprise Server without the async merge API
+                const { data } = await octokit.rest.pulls.merge(mergeOptions);
+                if (!data.merged)
+                    throw new Error(data.message);
+                result = { status: "merged", details: {} };
+            }
+            await this.reportMergeResult(result, range);
         }
         catch (error$1) {
             info("Merging (or commenting) failed:");
             error(error$1);
             setFailed("Failed to merge");
             const linkToCI = `${githubServerUrl}/${thisRepo.owner}/${thisRepo.repo}/actions/runs/${process.env.GITHUB_RUN_ID}?check_suite_focus=true`;
-            await octokit.rest.issues.createComment({
-                ...thisRepo,
-                issue_number: issue.number,
-                body: `There was an issue merging, maybe try again ${sender}. <a href="${linkToCI}">Details</a>`,
-            });
+            await this.postComment(`There was an issue merging, maybe try again ${sender}: ${errorMessage(error$1)} <a href="${linkToCI}">Details</a>`);
+        }
+    }
+    async reportMergeResult(result, range) {
+        const { octokit, thisRepo, issue, sender } = this;
+        const because = `because @${sender} is a code-owner of all the changes`;
+        const isStack = range.length > 1;
+        switch (result.status) {
+            case "merged":
+                await this.postComment(`Merging ${because} - thanks!${isStack ? ` This merged the stack: ${formatPRList(range)}.` : ""}`);
+                for (const number of range.slice(0, -1)) {
+                    await octokit.rest.issues.createComment({
+                        ...thisRepo,
+                        issue_number: number,
+                        body: `Merged as part of the stack via #${issue.number}, ${because}.`,
+                    });
+                }
+                return;
+            case "enqueued":
+                await this.postComment(`Added to the merge queue ${because} - thanks!${isStack ? ` The queue will merge ${formatPRList(range)} together.` : ""}`);
+                return;
+            case "pending":
+                await this.postComment(`Merge requested ${because}. GitHub is still processing it in the background.`);
+                return;
+            case "failed":
+                throw new Error(result.details.message || "GitHub rejected the merge");
         }
     }
     async closePROrIssueIfInCodeowners() {
@@ -37609,6 +38375,12 @@ const findCodeOwnersForChangedFiles = (changedFiles, cwd) => {
         users: Array.from(owners),
         labels: Array.from(labels),
     };
+};
+const formatPRList = (numbers) => formatList(numbers.map((number) => `#${number}`));
+// Every file changed across the PRs a merge would land (see getMergeRange).
+const getRangeChangedFiles = async (octokit, repoDeets, range) => {
+    const files = await Promise.all(range.map((n) => getPRChangedFiles(octokit, repoDeets, n)));
+    return [...new Set(files.flat())];
 };
 const getPRChangedFiles = async (octokit, repoDeets, prNumber) => {
     const options = octokit.rest.pulls.listFiles.endpoint.merge({

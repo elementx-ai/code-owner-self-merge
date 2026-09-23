@@ -60,6 +60,16 @@ This requires a token with the `read:org` scope. The default `GITHUB_TOKEN` issu
 
 If a team membership lookup fails with anything other than a 404, the action will fail the run rather than silently denying the merge — fix the token scope and retry.
 
+### Stacked PRs
+
+[Stacked PRs](https://docs.github.com/en/pull-requests/get-started/about-stacked-prs) merge from the bottom up: merging a PR in a stack also merges every unmerged PR below it, in one atomic operation. So `LGTM` on a stacked PR is treated as a merge of all of those PRs:
+
+- You need to be a code-owner of the files changed in **every** PR being merged, not only the one you commented on.
+- Each of those PRs must be mergeable and green.
+- PRs above the one you commented on are left open, and GitHub retargets them onto the stack's base branch.
+
+Merges go through GitHub's [async merge API](https://docs.github.com/rest/pulls/pulls#merge-a-pull-request-asynchronously), which stacked PRs require. If the base branch has a merge queue, the PR (or stack) is added to the queue instead.
+
 ### Issue / PR manipulation
 
 Merging a PR has strict security requirements, but closing a PR or Issue can have a weaker one. Anyone with a GitHub login listed in the CODEOWNERS file has the ability to close any PR or Issue via a comment or review which includes:
