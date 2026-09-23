@@ -37343,7 +37343,10 @@ const commentOnMergablePRs = async () => {
     if (!pr) {
         throw new Error("Missing pull_request payload");
     }
-    const changedFiles = await getPRChangedFiles(octokit, thisRepo, pr.number);
+    // A stacked PR's LGTM also merges the PRs below it, so owners need to own
+    // those files too for the announcement below to hold.
+    const range = await getMergeRange(octokit, thisRepo, pr);
+    const changedFiles = await getRangeChangedFiles(octokit, thisRepo, range);
     info(`Changed files: \n - ${changedFiles.join("\n - ")}`);
     const codeowners = findCodeOwnersForChangedFiles(changedFiles, cwd);
     info(`Code-owners: \n - ${codeowners.users.join("\n - ")}`);
@@ -37398,7 +37401,7 @@ const commentOnMergablePRs = async () => {
     const owners = formatList(formattedOwnersWhoHaveAccessToAllFilesInPR);
     const message = `Thanks for the PR!
 
-This section of the codebase is owned by ${owners} - if they write a comment saying "LGTM" then it will be merged.
+This section of the codebase is owned by ${owners} - if they write a comment saying "LGTM" then it will be merged.${range.length > 1 ? ` This PR is stacked, so that also merges ${formatPRList(range.slice(0, -1))} below it.` : ""}
 ${ourSignature}`;
     const skipOutput = getInput("quiet");
     if (!skipOutput) {
@@ -37473,9 +37476,7 @@ class Actor {
         if (range.length > 1) {
             info(`Stacked PR: merging this also merges ${formatPRList(range)}`);
         }
-        const changedFiles = [
-            ...new Set((await Promise.all(range.map((n) => getPRChangedFiles(octokit, thisRepo, n)))).flat()),
-        ];
+        const changedFiles = await getRangeChangedFiles(octokit, thisRepo, range);
         info(`Changed files: \n - ${changedFiles.join("\n - ")}`);
         const filesWhichArentOwned = getFilesNotOwnedByEffectiveOwner(await getEffectiveOwnerStrings(octokit, sender, changedFiles, cwd, org), changedFiles, cwd);
         if (filesWhichArentOwned.length !== 0) {
@@ -37721,6 +37722,11 @@ const findCodeOwnersForChangedFiles = (changedFiles, cwd) => {
     };
 };
 const formatPRList = (numbers) => formatList(numbers.map((number) => `#${number}`));
+// Every file changed across the PRs a merge would land (see getMergeRange).
+const getRangeChangedFiles = async (octokit, repoDeets, range) => {
+    const files = await Promise.all(range.map((n) => getPRChangedFiles(octokit, repoDeets, n)));
+    return [...new Set(files.flat())];
+};
 const getPRChangedFiles = async (octokit, repoDeets, prNumber) => {
     const options = octokit.rest.pulls.listFiles.endpoint.merge({
         ...repoDeets,
