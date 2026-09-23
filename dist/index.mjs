@@ -37887,12 +37887,13 @@ const getMergeBlocker = async (octokit, repo, pr, which) => {
     if (!pr.mergeable) {
         return `${which} has merge conflicts. They'll need to be fixed before this can be merged.`;
     }
-    // Don't merge red PRs or PRs with pending statuses
+    // Don't merge red PRs or PRs with pending statuses. Statuses come newest
+    // first, so keeping the first per context keeps the latest.
     const statusInfo = await octokit.rest.repos.listCommitStatusesForRef({
         ...repo,
         ref: pr.head.sha,
     });
-    const latestStatuses = statusInfo.data.filter((thing, index, self) => index === self.findIndex((item) => item.target_url === thing.target_url));
+    const latestStatuses = statusInfo.data.filter((thing, index, self) => index === self.findIndex((item) => item.context === thing.context));
     const pendingStatus = latestStatuses.find((status) => status.state === "pending");
     if (pendingStatus) {
         return `${which} has pending status checks that haven't completed yet. Blocked by [${pendingStatus.context}](${pendingStatus.target_url}): '${pendingStatus.description}'.`;
@@ -37941,7 +37942,9 @@ const findChangesSinceChecks = async (octokit, repo, prs) => {
         pull_number: target.number,
     });
     const latestRange = await getMergeRange(octokit, repo, latest);
-    if (latestRange.join() !== prs.map((pr) => pr.number).join()) {
+    const unchanged = latestRange.length === prs.length &&
+        latestRange.every((number, i) => number === prs[i].number);
+    if (!unchanged) {
         return "the stack changed after the checks ran.";
     }
     const moved = await findMovedHeads(octokit, repo, prs.slice(0, -1));
