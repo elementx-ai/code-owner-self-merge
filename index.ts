@@ -14,6 +14,7 @@ import {
   type AsyncMergeResult,
   type MergeMethod,
   mergePullRequestAsync,
+  stackedBypassNote,
 } from "./merge.js";
 
 type Octokit = ReturnType<typeof getOctokit>;
@@ -330,6 +331,7 @@ class Actor {
       return;
     }
 
+    const isStacked = Boolean((prInfo.data as { stack?: unknown }).stack);
     core.info("Creating comments and merging");
     try {
       const coauthor = `Co-authored-by: ${sender} <${sender}@users.noreply.github.com>`;
@@ -344,14 +346,12 @@ class Actor {
         sha: prInfo.data.head.sha,
       };
 
-      let result = await mergePullRequestAsync(octokit, mergeOptions);
-      if (!result) {
-        if (range.length > 1) {
-          throw new Error(
-            "The async merge API, which stacked PRs require, isn't available.",
-          );
-        }
-        // Older GitHub Enterprise Server without the async merge API
+      // Stacked PRs can only merge through the async API, but GitHub doesn't
+      // apply ruleset bypass there, so unstacked PRs keep the classic endpoint
+      let result: AsyncMergeResult;
+      if (isStacked) {
+        result = await mergePullRequestAsync(octokit, mergeOptions);
+      } else {
         const { data } = await octokit.rest.pulls.merge(mergeOptions);
         if (!data.merged) throw new Error(data.message);
         result = { status: "merged", details: {} };
@@ -364,7 +364,7 @@ class Actor {
 
       const linkToCI = `${githubServerUrl}/${thisRepo.owner}/${thisRepo.repo}/actions/runs/${process.env.GITHUB_RUN_ID}?check_suite_focus=true`;
       await this.postComment(
-        `There was an issue merging, maybe try again ${sender}: ${errorMessage(error)} <a href="${linkToCI}">Details</a>`,
+        `There was an issue merging, maybe try again ${sender}: ${errorMessage(error)} <a href="${linkToCI}">Details</a>${isStacked ? stackedBypassNote : ""}`,
       );
     }
   }

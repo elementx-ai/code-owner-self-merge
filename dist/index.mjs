@@ -37806,6 +37806,9 @@ function requireCodeowners () {
 var codeownersExports = requireCodeowners();
 var Codeowners = /*@__PURE__*/getDefaultExportFromCjs(codeownersExports);
 
+// Appended to a failed stacked merge: GitHub doesn't support ruleset bypass
+// for stacks, which is how self-merge usually gets past code owner review.
+const stackedBypassNote = "\n\nThis PR is stacked, and GitHub doesn't let the merging app bypass the base branch's rules for stacked PRs. Rules such as a required code owner review have to be met directly, or the PR unstacked.";
 // The PRs a merge of `pr` would land, bottom of the stack first. Merging a
 // stacked PR atomically merges every unmerged PR below it too, so those all
 // need the same access and status checks. An unstacked PR is just itself.
@@ -37829,7 +37832,6 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 // Merges through the async merge API, which stacked PRs require (the classic
 // endpoint rejects them) and which works for unstacked PRs too. Polls until
 // the merge settles or `timeoutMs` passes, returning the last result seen.
-// Returns undefined if the API isn't available (404), e.g. on older GHES.
 const mergePullRequestAsync = async (octokit, options, { pollIntervalMs = 2000, timeoutMs = 60_000 } = {}) => {
     const { owner, repo } = options;
     let result;
@@ -37839,8 +37841,9 @@ const mergePullRequestAsync = async (octokit, options, { pollIntervalMs = 2000, 
     }
     catch (error) {
         const status = error.status;
-        if (status === 404)
-            return undefined;
+        if (status === 404) {
+            throw new Error("The async merge API, which stacked PRs require, isn't available.");
+        }
         if (status === 409) {
             throw new Error("A merge is already in progress for this PR.");
         }
@@ -38155,6 +38158,7 @@ class Actor {
             await this.postComment(`Sorry @${sender}, ${drift} Comment "LGTM" again to merge it as it is now.`);
             return;
         }
+        const isStacked = Boolean(prInfo.data.stack);
         info("Creating comments and merging");
         try {
             const coauthor = `Co-authored-by: ${sender} <${sender}@users.noreply.github.com>`;
@@ -38167,12 +38171,13 @@ class Actor {
                 // Refuse to merge if someone pushed after the checks above ran
                 sha: prInfo.data.head.sha,
             };
-            let result = await mergePullRequestAsync(octokit, mergeOptions);
-            if (!result) {
-                if (range.length > 1) {
-                    throw new Error("The async merge API, which stacked PRs require, isn't available.");
-                }
-                // Older GitHub Enterprise Server without the async merge API
+            // Stacked PRs can only merge through the async API, but GitHub doesn't
+            // apply ruleset bypass there, so unstacked PRs keep the classic endpoint
+            let result;
+            if (isStacked) {
+                result = await mergePullRequestAsync(octokit, mergeOptions);
+            }
+            else {
                 const { data } = await octokit.rest.pulls.merge(mergeOptions);
                 if (!data.merged)
                     throw new Error(data.message);
@@ -38185,7 +38190,7 @@ class Actor {
             error(error$1);
             setFailed("Failed to merge");
             const linkToCI = `${githubServerUrl}/${thisRepo.owner}/${thisRepo.repo}/actions/runs/${process.env.GITHUB_RUN_ID}?check_suite_focus=true`;
-            await this.postComment(`There was an issue merging, maybe try again ${sender}: ${errorMessage(error$1)} <a href="${linkToCI}">Details</a>`);
+            await this.postComment(`There was an issue merging, maybe try again ${sender}: ${errorMessage(error$1)} <a href="${linkToCI}">Details</a>${isStacked ? stackedBypassNote : ""}`);
         }
     }
     async reportMergeResult(result, range) {

@@ -515,15 +515,15 @@ describe("mergePullRequestAsync", () => {
     expect(result?.status).toBe("pending");
   });
 
-  test("returns undefined when the async API isn't available", async () => {
+  test("explains when the async API isn't available", async () => {
     const octokit = {
       request: jest.fn(async (..._args: unknown[]) => {
         throw { status: 404 };
       }),
     };
-    expect(
-      await mergePullRequestAsync(octokit as any, options, fast),
-    ).toBeUndefined();
+    await expect(
+      mergePullRequestAsync(octokit as any, options, fast),
+    ).rejects.toThrow(/isn't available/);
   });
 
   test("explains a conflicting in-flight merge", async () => {

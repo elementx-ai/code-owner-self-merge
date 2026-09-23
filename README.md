@@ -68,7 +68,9 @@ If a team membership lookup fails with anything other than a 404, the action wil
 - Each of those PRs must be mergeable and green.
 - PRs above the one you commented on are left open, and GitHub retargets them onto the stack's base branch.
 
-Merges go through GitHub's [async merge API](https://docs.github.com/rest/pulls/pulls#merge-a-pull-request-asynchronously), which stacked PRs require. If the base branch has a merge queue, the PR (or stack) is added to the queue instead.
+Stacked PRs merge through GitHub's [async merge API](https://docs.github.com/rest/pulls/pulls#merge-a-pull-request-asynchronously), which they require. If the base branch has a merge queue, the stack is added to the queue instead. Unstacked PRs keep using the classic merge endpoint.
+
+GitHub doesn't support bypassing branch rules for stacked PRs. If your ruleset relies on the merging token being a bypass actor, for example to skip a required code owner review, a stacked PR can't be self-merged until that rule is met directly or the PR is unstacked.
 
 ### Issue / PR manipulation
 
