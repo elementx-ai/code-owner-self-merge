@@ -1,6 +1,10 @@
 import { describe, expect, jest, test } from "@jest/globals";
 
-import { getMergeRange, mergePullRequestAsync } from "./merge.js";
+import {
+  findMovedHeads,
+  getMergeRange,
+  mergePullRequestAsync,
+} from "./merge.js";
 
 import {
   findCodeOwnersForChangedFiles,
@@ -530,5 +534,34 @@ describe("mergePullRequestAsync", () => {
     await expect(
       mergePullRequestAsync(octokit as any, options, fast),
     ).rejects.toThrow(/already in progress/);
+  });
+});
+
+describe("findMovedHeads", () => {
+  const repo = { owner: "elementx-ai", repo: "app" };
+  const pr = (number: number, sha: string) =>
+    ({ number, head: { sha } }) as any;
+  const makeOctokit = (heads: Record<number, string>) => ({
+    rest: {
+      pulls: {
+        get: jest.fn(async ({ pull_number }: { pull_number: number }) => ({
+          data: pr(pull_number, heads[pull_number]!),
+        })),
+      },
+    },
+  });
+
+  test("returns nothing when no head has moved", async () => {
+    const octokit = makeOctokit({ 10: "a", 11: "b" });
+    expect(
+      await findMovedHeads(octokit as any, repo, [pr(10, "a"), pr(11, "b")]),
+    ).toEqual([]);
+  });
+
+  test("returns the PRs pushed to since they were fetched", async () => {
+    const octokit = makeOctokit({ 10: "a", 11: "b2" });
+    expect(
+      await findMovedHeads(octokit as any, repo, [pr(10, "a"), pr(11, "b")]),
+    ).toEqual([11]);
   });
 });

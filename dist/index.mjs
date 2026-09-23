@@ -37900,19 +37900,33 @@ const getMergeBlocker = async (octokit, repo, pr, which) => {
     }
     return undefined;
 };
-// Checks each PR the merge would land (see getMergeRange), bottom first.
-const getMergeBlockerInRange = async (octokit, repo, target, range) => {
-    for (const number of range) {
-        const isTarget = number === target.number;
-        const pr = isTarget
-            ? target
-            : (await octokit.rest.pulls.get({ ...repo, pull_number: number })).data;
-        const blocker = await getMergeBlocker(octokit, repo, pr, isTarget ? "this PR" : `#${number} (below in the stack)`);
+// Fetches each PR the merge would land (see getMergeRange), bottom first.
+// Fetch these before listing their files, so the head SHAs they record are
+// never newer than what was authorised.
+const getPullRequests = async (octokit, repo, target, range) => Promise.all(range.map(async (number) => number === target.number
+    ? target
+    : (await octokit.rest.pulls.get({ ...repo, pull_number: number })).data));
+// Checks each PR the merge would land, bottom first.
+const getMergeBlockerInRange = async (octokit, repo, prs, targetNumber) => {
+    for (const pr of prs) {
+        const blocker = await getMergeBlocker(octokit, repo, pr, pr.number === targetNumber
+            ? "this PR"
+            : `#${pr.number} (below in the stack)`);
         if (blocker) {
             return blocker;
         }
     }
     return undefined;
+};
+// The async merge API only pins the target PR's head SHA, but a stack merge
+// also lands the PRs below it. Returns those whose head has moved since `prs`
+// was fetched, as their new commits haven't been authorised.
+const findMovedHeads = async (octokit, repo, prs) => {
+    const current = await Promise.all(prs.map(async (pr) => (await octokit.rest.pulls.get({ ...repo, pull_number: pr.number }))
+        .data));
+    return current
+        .filter((pr, i) => pr.head.sha !== prs[i].head.sha)
+        .map((pr) => pr.number);
 };
 
 const githubServerUrl = process.env["GITHUB_SERVER_URL"] || "https://github.com";
@@ -38082,6 +38096,7 @@ class Actor {
         if (range.length > 1) {
             info(`Stacked PR: merging this also merges ${formatPRList(range)}`);
         }
+        const prs = await getPullRequests(octokit, thisRepo, prInfo.data, range);
         const changedFiles = await getRangeChangedFiles(octokit, thisRepo, range);
         info(`Changed files: \n - ${changedFiles.join("\n - ")}`);
         const filesWhichArentOwned = getFilesNotOwnedByEffectiveOwner(await getEffectiveOwnerStrings(octokit, sender, changedFiles, cwd, org), changedFiles, cwd);
@@ -38094,18 +38109,25 @@ class Actor {
             await this.postComment(`Sorry @${sender}, you don't have access to these files:\n\n${pathListToMarkdown(filesWhichArentOwned)}.${stackNote}`);
             return;
         }
-        return { prInfo, range };
+        return { prInfo, prs };
     }
     async mergeIfHasAccess() {
         const access = await this.getMergeRangeIfHasAccess();
         if (!access) {
             return;
         }
-        const { prInfo, range } = access;
+        const { prInfo, prs } = access;
+        const range = prs.map((pr) => pr.number);
         const { octokit, thisRepo, issue, sender } = this;
-        const blocker = await getMergeBlockerInRange(octokit, thisRepo, prInfo.data, range);
+        const blocker = await getMergeBlockerInRange(octokit, thisRepo, prs, issue.number);
         if (blocker) {
             await this.postComment(`Sorry @${sender}, ${blocker}`);
+            return;
+        }
+        // This PR is pinned by `sha` below; the ones under it in a stack aren't
+        const moved = await findMovedHeads(octokit, thisRepo, prs.slice(0, -1));
+        if (moved.length) {
+            await this.postComment(`Sorry @${sender}, ${formatPRList(moved)} got new commits after the checks ran. Comment "LGTM" again to merge the latest changes.`);
             return;
         }
         info("Creating comments and merging");

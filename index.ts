@@ -7,8 +7,10 @@ import { join } from "path";
 
 import {
   errorMessage,
+  findMovedHeads,
   getMergeBlockerInRange,
   getMergeRange,
+  getPullRequests,
   type AsyncMergeResult,
   type MergeMethod,
   mergePullRequestAsync,
@@ -251,7 +253,7 @@ class Actor {
   // Returns the PRs a merge of this one would land (see getMergeRange), but
   // only if the sender owns every file changed across all of them.
   async getMergeRangeIfHasAccess(): Promise<
-    { prInfo: PullsGetResponse; range: number[] } | undefined
+    { prInfo: PullsGetResponse; prs: PullsGetResponse["data"][] } | undefined
   > {
     const { octokit, thisRepo, sender, issue, cwd } = this;
     const org = thisRepo.owner;
@@ -273,6 +275,7 @@ class Actor {
       core.info(`Stacked PR: merging this also merges ${formatPRList(range)}`);
     }
 
+    const prs = await getPullRequests(octokit, thisRepo, prInfo.data, range);
     const changedFiles = await getRangeChangedFiles(octokit, thisRepo, range);
     core.info(`Changed files: \n - ${changedFiles.join("\n - ")}`);
 
@@ -296,7 +299,7 @@ class Actor {
       return;
     }
 
-    return { prInfo, range };
+    return { prInfo, prs };
   }
 
   async mergeIfHasAccess(): Promise<void> {
@@ -304,17 +307,27 @@ class Actor {
     if (!access) {
       return;
     }
-    const { prInfo, range } = access;
+    const { prInfo, prs } = access;
+    const range = prs.map((pr) => pr.number);
     const { octokit, thisRepo, issue, sender } = this;
 
     const blocker = await getMergeBlockerInRange(
       octokit,
       thisRepo,
-      prInfo.data,
-      range,
+      prs,
+      issue.number,
     );
     if (blocker) {
       await this.postComment(`Sorry @${sender}, ${blocker}`);
+      return;
+    }
+
+    // This PR is pinned by `sha` below; the ones under it in a stack aren't
+    const moved = await findMovedHeads(octokit, thisRepo, prs.slice(0, -1));
+    if (moved.length) {
+      await this.postComment(
+        `Sorry @${sender}, ${formatPRList(moved)} got new commits after the checks ran. Comment "LGTM" again to merge the latest changes.`,
+      );
       return;
     }
 

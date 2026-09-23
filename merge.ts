@@ -177,27 +177,62 @@ const getMergeBlocker = async (
   return undefined;
 };
 
-// Checks each PR the merge would land (see getMergeRange), bottom first.
-export const getMergeBlockerInRange = async (
+// Fetches each PR the merge would land (see getMergeRange), bottom first.
+// Fetch these before listing their files, so the head SHAs they record are
+// never newer than what was authorised.
+export const getPullRequests = async (
   octokit: Octokit,
   repo: RepoRef,
   target: PullRequest,
   range: number[],
+): Promise<PullRequest[]> =>
+  Promise.all(
+    range.map(async (number) =>
+      number === target.number
+        ? target
+        : (await octokit.rest.pulls.get({ ...repo, pull_number: number })).data,
+    ),
+  );
+
+// Checks each PR the merge would land, bottom first.
+export const getMergeBlockerInRange = async (
+  octokit: Octokit,
+  repo: RepoRef,
+  prs: PullRequest[],
+  targetNumber: number,
 ): Promise<string | undefined> => {
-  for (const number of range) {
-    const isTarget = number === target.number;
-    const pr = isTarget
-      ? target
-      : (await octokit.rest.pulls.get({ ...repo, pull_number: number })).data;
+  for (const pr of prs) {
     const blocker = await getMergeBlocker(
       octokit,
       repo,
       pr,
-      isTarget ? "this PR" : `#${number} (below in the stack)`,
+      pr.number === targetNumber
+        ? "this PR"
+        : `#${pr.number} (below in the stack)`,
     );
     if (blocker) {
       return blocker;
     }
   }
   return undefined;
+};
+
+// The async merge API only pins the target PR's head SHA, but a stack merge
+// also lands the PRs below it. Returns those whose head has moved since `prs`
+// was fetched, as their new commits haven't been authorised.
+export const findMovedHeads = async (
+  octokit: Octokit,
+  repo: RepoRef,
+  prs: PullRequest[],
+): Promise<number[]> => {
+  const current = await Promise.all(
+    prs.map(
+      async (pr) =>
+        (await octokit.rest.pulls.get({ ...repo, pull_number: pr.number }))
+          .data,
+    ),
+  );
+  return current
+    .filter((pr, i) => pr.head.sha !== prs[i]!.head.sha)
+    .map((pr) => pr.number);
 };
